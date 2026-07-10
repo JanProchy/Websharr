@@ -164,10 +164,13 @@ async def ui_settings_post(request: Request):
             return JSONResponse({"error": "Password must have at least 4 characters"}, status_code=400)
         settings.auth_password_hash = hash_password(body["new_password"])
 
+    if body.get("regenerate_api_key"):
+        settings.api_key = secrets.token_hex(16)
+
     settings.save()
     settings.apply()
     request.app.state.webshare.set_credentials(config.webshare_username, config.webshare_password)
-    return {"ok": True}
+    return {"ok": True, "api_key": config.api_key}
 
 
 @router.post("/ui/api/test-webshare")

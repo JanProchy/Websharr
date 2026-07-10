@@ -29,6 +29,7 @@ logger = logging.getLogger("websharr")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings.load()
+    settings.ensure_api_key()
     settings.apply()
     client = WebshareClient(config.webshare_username, config.webshare_password)
     manager = DownloadManager(

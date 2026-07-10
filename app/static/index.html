@@ -149,7 +149,9 @@
 
   /* settings */
   .scard { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
-    padding: 16px; margin-bottom: 12px; max-width: 560px; }
+    padding: 16px; margin-bottom: 12px; }
+  .scard label input { max-width: 420px; display: block; }
+  #set-api-key { max-width: 420px; }
   .scard h3 { margin: 0 0 4px; font-size: 13.5px; font-weight: 800; }
   .shint { color: var(--faint); font-size: 11.5px; margin: 0 0 12px; line-height: 1.55; }
   .scard label { display: block; margin-bottom: 10px; font-weight: 700; color: var(--muted); font-size: 12px; }
@@ -257,7 +259,9 @@
       <div class="srow" style="margin-top:0">
         <input id="set-api-key" readonly>
         <button class="accentbtn" id="set-copy-key">Copy</button>
+        <button class="ghost" id="set-regen-key">Regenerate</button>
       </div>
+      <div class="srow"><span class="sresult" id="set-key-result"></span></div>
     </div>
 
     <div class="scard">
@@ -639,6 +643,20 @@ $("set-copy-key").onclick = async () => {
   await navigator.clipboard.writeText($("set-api-key").value).catch(() => {});
   $("set-copy-key").textContent = "Copied!";
   setTimeout(() => { $("set-copy-key").textContent = "Copy"; }, 1500);
+};
+
+$("set-regen-key").onclick = async () => {
+  if ($("set-regen-key").textContent === "Regenerate") {
+    $("set-regen-key").textContent = "Really regenerate?";
+    setTimeout(() => { $("set-regen-key").textContent = "Regenerate"; }, 3000);
+    return;
+  }
+  try {
+    const data = await uiPost("settings", { regenerate_api_key: true });
+    $("set-api-key").value = data.api_key;
+    $("set-regen-key").textContent = "Regenerate";
+    sresult("set-key-result", true, "✓ New key generated — update it in Sonarr/Radarr");
+  } catch (e) { sresult("set-key-result", false, e.message); }
 };
 
 $("set-pass-save").onclick = async () => {

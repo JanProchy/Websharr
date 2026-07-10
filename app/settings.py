@@ -85,6 +85,17 @@ class Settings:
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         path.chmod(0o600)
 
+    def ensure_api_key(self) -> None:
+        """Guarantee a Sonarr-style random key when none was provided.
+
+        Without this, deleting the key from settings.json would silently fall
+        back to the weak built-in default ("websharr").
+        """
+        if config.api_key == "websharr" and not self.api_key:
+            self.api_key = secrets.token_hex(16)
+            self.save()
+            logger.info("Generated a new API key (see Settings in the UI)")
+
     def apply(self) -> None:
         """Push saved values into the runtime config (settings win over env)."""
         if self.api_key:

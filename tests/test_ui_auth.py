@@ -108,6 +108,46 @@ def test_change_ui_password(client):
                        json={"username": "morte", "password": "novejpass"}).json()["ok"] is True
 
 
+def test_default_api_key_replaced_with_random(tmp_path, monkeypatch):
+    """Deleting the key must regenerate a random one, never the weak default."""
+    import app.main as app_main
+    from fastapi.testclient import TestClient
+
+    from app.config import config
+    from app.main import app
+
+    monkeypatch.setattr(config, "api_key", "websharr")  # built-in default
+    monkeypatch.setattr(config, "complete_dir", tmp_path / "complete")
+    monkeypatch.setattr(config, "incomplete_dir", tmp_path / "incomplete")
+    monkeypatch.setattr(config, "state_file", tmp_path / "state.json")
+    monkeypatch.setattr(config, "settings_file", tmp_path / "settings.json")
+    monkeypatch.setattr(app_main, "WebshareClient", FakeWebshareClient)
+
+    with TestClient(app):
+        assert config.api_key != "websharr"
+        assert len(config.api_key) == 32
+        first_key = config.api_key
+
+    # Persisted — the same key comes back after a restart.
+    with TestClient(app):
+        assert config.api_key == first_key
+
+
+def test_regenerate_api_key(client):
+    _setup(client)
+    old_key = client.get("/ui/api/settings").json()["api_key"]
+
+    body = client.post("/ui/api/settings", json={"regenerate_api_key": True}).json()
+    new_key = body["api_key"]
+    assert new_key != old_key
+    assert len(new_key) == 32
+
+    # Old key is dead, new key and the session both work.
+    client.cookies.clear()
+    assert client.get("/ui/api/queue", params={"apikey": old_key}).status_code == 403
+    assert client.get("/ui/api/queue", params={"apikey": new_key}).status_code == 200
+
+
 def test_webshare_connection_test(client, monkeypatch):
     # Open during first-run so the setup page can use it.
     ok = client.post("/ui/api/test-webshare",
