@@ -6,6 +6,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
+COPY assets ./assets
 
 ENV COMPLETE_DIR=/downloads/complete \
     INCOMPLETE_DIR=/downloads/incomplete \

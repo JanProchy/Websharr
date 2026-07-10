@@ -261,6 +261,16 @@
     </div>
 
     <div class="scard">
+      <h3>Storage paths</h3>
+      <p class="shint">Finished downloads land in <b>completed</b> as
+        <code>&lt;category&gt;/&lt;release&gt;/&lt;file&gt;</code>. These are paths
+        <b>inside the container</b> — check the <code>/downloads</code> volume in
+        <code>docker-compose.yml</code> to see where they are on the host.</p>
+      <label>Completed <input id="set-dir-complete" readonly></label>
+      <label>In progress <input id="set-dir-incomplete" readonly></label>
+    </div>
+
+    <div class="scard">
       <h3>Websharr account</h3>
       <label>Username <input id="set-ui-user" readonly></label>
       <label>Current password <input id="set-cur-pass" type="password" autocomplete="current-password"></label>
@@ -356,6 +366,8 @@ const App = {
       $("set-ws-pass").value = "";
       $("set-api-key").value = s.api_key;
       $("set-ui-user").value = s.ui_username;
+      $("set-dir-complete").value = s.complete_dir;
+      $("set-dir-incomplete").value = s.incomplete_dir;
     } catch (e) { /* offline banner already covers this */ }
   },
 

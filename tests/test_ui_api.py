@@ -63,6 +63,19 @@ def test_ui_search_returns_json(client, fake_webshare):
     assert "apikey=testkey" in results[0]["nzb_url"]
 
 
+def test_ui_search_ranks_relevance_above_size(client, fake_webshare):
+    """Webshare fulltext is fuzzy — a huge wrong episode must not outrank
+    the exact match, and diacritics must not matter."""
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("wrong-ep", "Zaklínač.S04E02.2160p.mkv", 20_000_000_000),
+        SearchResult("right-small", "Zaklinac.S01E03.720p.mkv", 700_000_000),
+        SearchResult("right-big", "Zaklínač S01E03 1080p CZ.mkv", 3_000_000_000),
+    ]
+    body = _ui(client, "search", q="zaklinac s01e03", t="search").json()
+    assert [r["ident"] for r in body["results"]] == ["right-big", "right-small", "wrong-ep"]
+
+
 def test_ui_search_empty_query(client):
     body = _ui(client, "search", q="", t="search").json()
     assert body["results"] == []

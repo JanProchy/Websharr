@@ -18,6 +18,7 @@ class FakeWebshareClient:
         self.username = username
         self.password = password
         self.results: list[SearchResult] = []
+        self.fuzzy = False  # True = return everything, like Webshare fulltext
         self.file_link_url = "http://127.0.0.1:1/file.mkv"  # unreachable by default
 
     def set_credentials(self, username: str, password: str):
@@ -31,6 +32,8 @@ class FakeWebshareClient:
         return self.username
 
     async def search(self, query: str, limit: int = 60, offset: int = 0):
+        if self.fuzzy:
+            return list(self.results)
         return [r for r in self.results if all(
             part.lower() in r.name.lower() for part in query.split()
         )]

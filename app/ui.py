@@ -12,6 +12,7 @@ so it never needs to be hard-coded in JS.
 import asyncio
 import logging
 import secrets
+import unicodedata
 import urllib.parse
 from dataclasses import asdict
 from pathlib import Path
@@ -139,6 +140,8 @@ async def ui_settings_get(request: Request):
         "webshare_username": config.webshare_username,
         "webshare_password_set": bool(config.webshare_password),
         "api_key": config.api_key,
+        "complete_dir": str(config.complete_dir),
+        "incomplete_dir": str(config.incomplete_dir),
     }
 
 
@@ -233,6 +236,30 @@ def _is_video(name: str) -> bool:
     return name.lower().endswith(VIDEO_EXTENSIONS)
 
 
+def _normalize(text: str) -> str:
+    """Lowercase, strip diacritics, collapse punctuation to spaces."""
+    text = unicodedata.normalize("NFKD", text.lower())
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    return "".join(c if c.isalnum() else " " for c in text)
+
+
+def _relevance(queries: list[str], name: str) -> float:
+    """Fraction of query tokens present in the file name (best query wins).
+
+    Webshare's fulltext search is fuzzy — for "zaklinac s01e03" it happily
+    returns other episodes too, so size alone is a bad ranking.
+    """
+    name_tokens = set(_normalize(name).split())
+    best = 0.0
+    for query in queries:
+        q_tokens = _normalize(query).split()
+        if not q_tokens:
+            continue
+        score = sum(1 for t in q_tokens if t in name_tokens) / len(q_tokens)
+        best = max(best, score)
+    return best
+
+
 def _result_json(request: Request, r: SearchResult) -> dict:
     base = str(request.base_url).rstrip("/")
     nzb_url = (
@@ -284,7 +311,7 @@ async def ui_search(request: Request):
             seen.add(r.ident)
             merged.append(r)
 
-    merged.sort(key=lambda r: r.size, reverse=True)
+    merged.sort(key=lambda r: (-_relevance(queries, r.name), -r.size))
     return {
         "results": [_result_json(request, r) for r in merged[:limit]],
         "queries": queries,
