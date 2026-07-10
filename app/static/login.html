@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Websharr — Sign in</title>
+<link rel="icon" href="/ui/assets/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#0e2638; --panel:#0a1c2a; --inner:#071320; --border:#1c3a52;
+    --text:#f2f7fb; --muted:#8ba7bd; --accent:#4db6f5; }
+  * { box-sizing: border-box; }
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+    background:var(--bg); color:var(--text); font:13px/1.5 'Nunito',sans-serif; padding:24px; }
+  .card { width:360px; max-width:100%; background:var(--panel); border:1px solid var(--border);
+    border-radius:14px; padding:28px; }
+  .head { display:flex; flex-direction:column; align-items:center; gap:10px; margin-bottom:22px; }
+  .head img { width:52px; height:52px; border-radius:12px; }
+  .head h1 { font-size:18px; font-weight:800; margin:0; }
+  label { display:block; margin-bottom:12px; font-weight:700; color:var(--muted); font-size:12px; }
+  input { width:100%; margin-top:4px; background:var(--inner); border:1px solid var(--border);
+    border-radius:8px; padding:9px 12px; color:var(--text); font:600 13px 'Nunito',sans-serif; outline:none; }
+  input:focus { border-color:var(--accent); }
+  button { width:100%; margin-top:10px; background:var(--accent); border:none; color:#06202f;
+    border-radius:9px; padding:11px; font:800 14px 'Nunito',sans-serif; cursor:pointer; }
+  button:hover { background:#7ecbf8; }
+  #error { display:none; margin-top:14px; padding:9px 12px; border-radius:8px; font-weight:700;
+    font-size:12.5px; color:#f8a49e; background:rgba(242,109,100,0.12);
+    border:1px solid rgba(242,109,100,0.35); }
+</style>
+</head>
+<body>
+<form class="card" id="login-form">
+  <div class="head">
+    <img src="/ui/assets/logo.svg" alt="">
+    <h1>Websharr</h1>
+  </div>
+  <label>Username <input id="username" autocomplete="username" autofocus required></label>
+  <label>Password <input id="password" type="password" autocomplete="current-password" required></label>
+  <button type="submit">Sign in</button>
+  <div id="error"></div>
+</form>
+
+<script>
+"use strict";
+document.getElementById("login-form").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const err = document.getElementById("error");
+  err.style.display = "none";
+  try {
+    const resp = await fetch("/ui/api/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: document.getElementById("username").value.trim(),
+        password: document.getElementById("password").value,
+      }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || resp.statusText);
+    location.reload();
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = "block";
+  }
+};
+</script>
+</body>
+</html>

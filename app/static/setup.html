@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Websharr — Setup</title>
+<link rel="icon" href="/ui/assets/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#0e2638; --panel:#0a1c2a; --inner:#071320; --border:#1c3a52;
+    --text:#f2f7fb; --muted:#8ba7bd; --faint:#5f7a90; --accent:#4db6f5;
+    --green:#45d483; --red:#f26d64; }
+  * { box-sizing: border-box; }
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+    background:var(--bg); color:var(--text); font:13px/1.5 'Nunito',sans-serif; padding:24px; }
+  .card { width:420px; max-width:100%; background:var(--panel); border:1px solid var(--border);
+    border-radius:14px; padding:28px; }
+  .head { display:flex; flex-direction:column; align-items:center; gap:10px; margin-bottom:22px; }
+  .head img { width:52px; height:52px; border-radius:12px; }
+  .head h1 { font-size:18px; font-weight:800; margin:0; }
+  .head p { color:var(--muted); margin:0; text-align:center; font-size:12.5px; }
+  h2 { font-size:11px; font-weight:800; letter-spacing:.8px; text-transform:uppercase;
+    color:var(--faint); margin:20px 0 8px; }
+  label { display:block; margin-bottom:10px; font-weight:700; color:var(--muted); font-size:12px; }
+  input { width:100%; margin-top:4px; background:var(--inner); border:1px solid var(--border);
+    border-radius:8px; padding:9px 12px; color:var(--text); font:600 13px 'Nunito',sans-serif; outline:none; }
+  input:focus { border-color:var(--accent); }
+  .hint { color:var(--faint); font-size:11.5px; margin:6px 0 0; line-height:1.5; }
+  .row { display:flex; align-items:center; gap:10px; margin-top:18px; }
+  .test { background:none; border:1px solid var(--border); color:var(--muted); border-radius:8px;
+    padding:8px 14px; font:700 12px 'Nunito',sans-serif; cursor:pointer; }
+  .test:hover { color:var(--accent); border-color:var(--accent); }
+  #test-result { font-size:12px; font-weight:700; flex:1; }
+  button[type=submit] { width:100%; margin-top:18px; background:var(--accent); border:none;
+    color:#06202f; border-radius:9px; padding:11px; font:800 14px 'Nunito',sans-serif; cursor:pointer; }
+  button[type=submit]:hover { background:#7ecbf8; }
+  #error { display:none; margin-top:14px; padding:9px 12px; border-radius:8px; font-weight:700;
+    font-size:12.5px; color:#f8a49e; background:rgba(242,109,100,0.12);
+    border:1px solid rgba(242,109,100,0.35); }
+</style>
+</head>
+<body>
+<form class="card" id="setup-form">
+  <div class="head">
+    <img src="/ui/assets/logo.svg" alt="">
+    <h1>Welcome to Websharr</h1>
+    <p>One-time setup — create your account and connect Webshare.cz.</p>
+  </div>
+
+  <h2>Your Websharr account</h2>
+  <label>Username <input id="username" autocomplete="username" required></label>
+  <label>Password <input id="password" type="password" autocomplete="new-password" required minlength="4"></label>
+  <label>Confirm password <input id="password2" type="password" autocomplete="new-password" required></label>
+
+  <h2>Webshare.cz account</h2>
+  <label>Username or e-mail <input id="ws-user" value="__WEBSHARE_USER__" autocomplete="off"></label>
+  <label>Password <input id="ws-pass" type="password" autocomplete="off"></label>
+  <p class="hint">Your Webshare.cz <b>premium</b> login — just a name and password,
+    Webshare.cz has no API key. Websharr generates its own API key for
+    Sonarr/Radarr; you'll find it in Settings afterwards.</p>
+  <div class="row">
+    <button type="button" class="test" id="test">Test connection</button>
+    <span id="test-result"></span>
+  </div>
+
+  <button type="submit">Get started</button>
+  <div id="error"></div>
+</form>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+
+function showError(msg) {
+  const el = $("error");
+  el.textContent = msg;
+  el.style.display = "block";
+}
+
+$("test").onclick = async () => {
+  const out = $("test-result");
+  out.style.color = "var(--muted)";
+  out.textContent = "Testing…";
+  try {
+    const resp = await fetch("/ui/api/test-webshare", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: $("ws-user").value, password: $("ws-pass").value }),
+    });
+    const data = await resp.json();
+    out.style.color = data.ok ? "var(--green)" : "var(--red)";
+    out.textContent = data.ok ? `✓ Logged in as ${data.username}` : data.error;
+  } catch (e) {
+    out.style.color = "var(--red)";
+    out.textContent = "Request failed: " + e.message;
+  }
+};
+
+$("setup-form").onsubmit = async (ev) => {
+  ev.preventDefault();
+  if ($("password").value !== $("password2").value) {
+    showError("Passwords do not match.");
+    return;
+  }
+  try {
+    const resp = await fetch("/ui/api/setup", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: $("username").value.trim(),
+        password: $("password").value,
+        webshare_username: $("ws-user").value.trim(),
+        webshare_password: $("ws-pass").value,
+      }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || resp.statusText);
+    location.reload();
+  } catch (e) {
+    showError(e.message);
+  }
+};
+</script>
+</body>
+</html>

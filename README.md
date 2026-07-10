@@ -12,23 +12,27 @@ Flow: request in Jellyseerr → Sonarr/Radarr searches via Websharr → grab →
 ## Getting started
 
 ```bash
-cp .env.example .env   # fill in your Webshare login
 docker compose up -d --build
 ```
 
-`.env`:
+Then open **`http://localhost:9797/ui`** and walk through the first-run setup:
+create your Websharr account and enter your Webshare.cz **premium** login
+(just a username/e-mail and password — Webshare.cz has no API key). Websharr
+generates its own API key for Sonarr/Radarr; you'll find it in **Settings**.
 
-```env
-WEBSHARE_USERNAME=your-login
-WEBSHARE_PASSWORD=your-password
-WEBSHARR_API_KEY=some-random-string
-```
+Environment variables (`.env`, all optional) can pre-fill the Webshare login
+and pin the API key — values saved in the UI take precedence and persist in
+`/config/settings.json`.
 
 In `docker-compose.yml`, adjust the `/downloads` volume so it points to the same folder that Sonarr/Radarr sees (otherwise set up a Remote Path Mapping).
 
 ## Web UI
 
-A monitoring and testing interface runs at **`http://localhost:9797/ui`** — live download queue with progress, history with retry, and a manual search tab whose **Grab** button pushes a release through the same SABnzbd flow Sonarr would use. No configuration needed; it shares `WEBSHARR_API_KEY` with the API endpoints.
+A monitoring and testing interface runs at **`http://localhost:9797/ui`**
+(sign-in required, Sonarr-style) — live download queue with progress, history
+with retry, a manual search tab whose **Grab** button pushes a release through
+the same SABnzbd flow Sonarr would use, and a settings page for the Webshare
+account, the API key and your password.
 
 ## Setup in Sonarr / Radarr
 
@@ -38,7 +42,7 @@ A monitoring and testing interface runs at **`http://localhost:9797/ui`** — li
 |---|---|
 | URL | `http://websharr:9797/torznab` |
 | API Path | `/api` |
-| API Key | the value of `WEBSHARR_API_KEY` |
+| API Key | copy from Websharr → Settings |
 | Categories | 5000 (TV) / 2000 (Movies) |
 
 Also works through Prowlarr as a **Generic Torznab** indexer.
@@ -50,15 +54,16 @@ Also works through Prowlarr as a **Generic Torznab** indexer.
 | Host | `websharr` |
 | Port | `9797` |
 | URL Base | `/sabnzbd` |
-| API Key | the value of `WEBSHARR_API_KEY` |
+| API Key | copy from Websharr → Settings |
 | Category | `tv` (Sonarr) / `movies` (Radarr) |
 
 ## Configuration (environment variables)
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `WEBSHARE_USERNAME` / `WEBSHARE_PASSWORD` | — | Webshare.cz credentials |
-| `WEBSHARR_API_KEY` | `websharr` | API key for both the Torznab and SABnzbd endpoints |
+| `WEBSHARE_USERNAME` / `WEBSHARE_PASSWORD` | — | Webshare.cz credentials (initial default; editable in the UI) |
+| `WEBSHARR_API_KEY` | auto-generated | API key for the Torznab/SABnzbd endpoints; set to pin a fixed value |
+| `SETTINGS_FILE` | `/config/settings.json` | persisted settings (UI account, Webshare login, API key) |
 | `COMPLETE_DIR` | `/downloads/complete` | finished downloads (`<cat>/<name>/file`) |
 | `INCOMPLETE_DIR` | `/downloads/incomplete` | in-progress files |
 | `STATE_FILE` | `/config/state.json` | queue/history persistence |

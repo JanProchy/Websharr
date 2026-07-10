@@ -9,7 +9,9 @@ The API key is rendered into the page server-side (placeholder replacement),
 so it never needs to be hard-coded in JS.
 """
 
+import asyncio
 import logging
+import secrets
 import urllib.parse
 from dataclasses import asdict
 from pathlib import Path
@@ -21,6 +23,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from . import __version__
 from .config import config
 from .downloads import DownloadManager, Job
+from .settings import SESSION_TTL, hash_password, settings, verify_password
 from .torznab import VIDEO_EXTENSIONS, build_queries
 from .webshare import SearchResult, WebshareError
 
@@ -31,6 +34,7 @@ router = APIRouter()
 STATIC_DIR = Path(__file__).parent / "static"
 ASSETS_DIR = Path(__file__).parent.parent / "assets"
 ALLOWED_ASSETS = {"logo.svg", "logo-wordmark.svg", "favicon.svg"}
+SESSION_COOKIE = "websharr_session"
 
 
 def _unauthorized() -> JSONResponse:
@@ -41,6 +45,21 @@ def _check_key(request: Request) -> bool:
     return request.query_params.get("apikey") == config.api_key
 
 
+def _session_ok(request: Request) -> bool:
+    token = request.cookies.get(SESSION_COOKIE, "")
+    return settings.configured and bool(token) and settings.verify_session(token)
+
+
+def _authorized(request: Request) -> bool:
+    """Sonarr-style: the API key always works, a logged-in session too."""
+    return _check_key(request) or _session_ok(request)
+
+
+def _set_session(resp: JSONResponse) -> None:
+    resp.set_cookie(SESSION_COOKIE, settings.issue_session(),
+                    max_age=SESSION_TTL, httponly=True, samesite="lax")
+
+
 def _job_json(job: Job) -> dict:
     data = asdict(job)
     data["job_name"] = job.job_name
@@ -48,11 +67,129 @@ def _job_json(job: Job) -> dict:
 
 
 @router.get("/ui", response_class=HTMLResponse)
-async def ui_index():
+async def ui_index(request: Request):
+    if not settings.configured:
+        html = (STATIC_DIR / "setup.html").read_text(encoding="utf-8")
+        return HTMLResponse(html.replace("__WEBSHARE_USER__", config.webshare_username))
+    if not _session_ok(request):
+        return HTMLResponse((STATIC_DIR / "login.html").read_text(encoding="utf-8"))
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     html = html.replace("__WEBSHARR_API_KEY__", config.api_key)
     html = html.replace("__WEBSHARR_VERSION__", __version__)
     return HTMLResponse(html)
+
+
+@router.post("/ui/api/setup")
+async def ui_setup(request: Request):
+    """First-run: create the UI account and store Webshare credentials."""
+    if settings.configured:
+        return JSONResponse({"error": "Already configured"}, status_code=403)
+    body = await request.json()
+    username = (body.get("username") or "").strip()
+    password = body.get("password") or ""
+    if not username or len(password) < 4:
+        return JSONResponse(
+            {"error": "Username and a password of at least 4 characters are required"},
+            status_code=400)
+
+    settings.auth_username = username
+    settings.auth_password_hash = hash_password(password)
+    settings.webshare_username = (body.get("webshare_username") or "").strip()
+    settings.webshare_password = body.get("webshare_password") or ""
+    # Keep an explicitly configured key; otherwise generate one (shown in Settings).
+    settings.api_key = config.api_key if config.api_key != "websharr" else secrets.token_hex(16)
+    settings.save()
+    settings.apply()
+    request.app.state.webshare.set_credentials(config.webshare_username, config.webshare_password)
+    logger.info("Initial setup completed (user=%s)", username)
+
+    resp = JSONResponse({"ok": True})
+    _set_session(resp)
+    return resp
+
+
+@router.post("/ui/api/login")
+async def ui_login(request: Request):
+    if not settings.configured:
+        return JSONResponse({"error": "Not configured yet"}, status_code=400)
+    body = await request.json()
+    username = (body.get("username") or "").strip()
+    password = body.get("password") or ""
+    if username != settings.auth_username or not verify_password(password, settings.auth_password_hash):
+        await asyncio.sleep(0.4)  # blunt brute-force brake
+        return JSONResponse({"error": "Invalid username or password"}, status_code=403)
+    resp = JSONResponse({"ok": True})
+    _set_session(resp)
+    return resp
+
+
+@router.post("/ui/api/logout")
+async def ui_logout():
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(SESSION_COOKIE)
+    return resp
+
+
+@router.get("/ui/api/settings")
+async def ui_settings_get(request: Request):
+    if not _authorized(request):
+        return _unauthorized()
+    return {
+        "ui_username": settings.auth_username,
+        "webshare_username": config.webshare_username,
+        "webshare_password_set": bool(config.webshare_password),
+        "api_key": config.api_key,
+    }
+
+
+@router.post("/ui/api/settings")
+async def ui_settings_post(request: Request):
+    if not _authorized(request):
+        return _unauthorized()
+    body = await request.json()
+
+    if "webshare_username" in body:
+        settings.webshare_username = (body.get("webshare_username") or "").strip()
+        new_pass = body.get("webshare_password") or ""
+        # Empty password field means "keep the current one".
+        settings.webshare_password = new_pass or settings.webshare_password or config.webshare_password
+
+    if body.get("new_password"):
+        if not verify_password(body.get("current_password") or "", settings.auth_password_hash):
+            return JSONResponse({"error": "Current password is incorrect"}, status_code=403)
+        if len(body["new_password"]) < 4:
+            return JSONResponse({"error": "Password must have at least 4 characters"}, status_code=400)
+        settings.auth_password_hash = hash_password(body["new_password"])
+
+    settings.save()
+    settings.apply()
+    request.app.state.webshare.set_credentials(config.webshare_username, config.webshare_password)
+    return {"ok": True}
+
+
+@router.post("/ui/api/test-webshare")
+async def ui_test_webshare(request: Request):
+    """Try logging in to Webshare with the given (or saved) credentials.
+
+    Open during first-run setup; requires auth once configured.
+    """
+    if settings.configured and not _authorized(request):
+        return _unauthorized()
+    body = await request.json()
+    username = (body.get("username") or "").strip() or config.webshare_username
+    password = body.get("password") or config.webshare_password
+    if not username or not password:
+        return {"ok": False, "error": "Username and password are required"}
+
+    client_cls = type(request.app.state.webshare)
+    tmp = client_cls(username, password)
+    try:
+        user = await tmp.check_login()
+        return {"ok": True, "username": user}
+    except (WebshareError, httpx.HTTPError) as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        await tmp.close()
 
 
 @router.get("/ui/assets/{name}")
@@ -64,7 +201,7 @@ async def ui_asset(name: str):
 
 @router.get("/ui/api/status")
 async def ui_status(request: Request):
-    if not _check_key(request):
+    if not _authorized(request):
         return _unauthorized()
     manager: DownloadManager = request.app.state.downloads
     return {
@@ -78,7 +215,7 @@ async def ui_status(request: Request):
 
 @router.get("/ui/api/queue")
 async def ui_queue(request: Request):
-    if not _check_key(request):
+    if not _authorized(request):
         return _unauthorized()
     manager: DownloadManager = request.app.state.downloads
     return {"jobs": [_job_json(j) for j in manager.queue_jobs()]}
@@ -86,7 +223,7 @@ async def ui_queue(request: Request):
 
 @router.get("/ui/api/history")
 async def ui_history(request: Request):
-    if not _check_key(request):
+    if not _authorized(request):
         return _unauthorized()
     manager: DownloadManager = request.app.state.downloads
     return {"jobs": [_job_json(j) for j in manager.history_jobs()]}
@@ -117,7 +254,7 @@ def _result_json(request: Request, r: SearchResult) -> dict:
 @router.get("/ui/api/search")
 async def ui_search(request: Request):
     """JSON search — same query building as /torznab/api, without the XML."""
-    if not _check_key(request):
+    if not _authorized(request):
         return _unauthorized()
 
     params = request.query_params

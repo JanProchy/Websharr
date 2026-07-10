@@ -121,6 +121,18 @@ class WebshareClient:
     async def close(self) -> None:
         await self._http.aclose()
 
+    def set_credentials(self, username: str, password: str) -> None:
+        """Swap the account at runtime (settings change); drops the token."""
+        self._username = username
+        self._password = password
+        self._token = None
+        self._token_ts = 0.0
+
+    async def check_login(self) -> str:
+        """Force a fresh login; returns the username on success."""
+        await self._get_token(force=True)
+        return self._username
+
     async def _post(self, path: str, data: dict) -> ET.Element:
         resp = await self._http.post(path, data=data)
         resp.raise_for_status()

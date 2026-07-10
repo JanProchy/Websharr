@@ -14,6 +14,7 @@ from . import __version__
 from .config import config
 from .downloads import DownloadManager
 from .sabnzbd import router as sabnzbd_router
+from .settings import settings
 from .torznab import router as torznab_router
 from .ui import router as ui_router
 from .webshare import WebshareClient
@@ -27,6 +28,8 @@ logger = logging.getLogger("websharr")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    settings.load()
+    settings.apply()
     client = WebshareClient(config.webshare_username, config.webshare_password)
     manager = DownloadManager(
         client=client,

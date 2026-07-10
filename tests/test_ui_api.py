@@ -11,6 +11,8 @@ def _ui(client, path, **params):
 
 
 def test_ui_page_served_with_key_injected(client):
+    # /ui serves the app only after first-run setup (which also signs us in).
+    client.post("/ui/api/setup", json={"username": "u", "password": "pass1234"})
     resp = client.get("/ui")
     assert resp.status_code == 200
     assert "text/html" in resp.headers["content-type"]

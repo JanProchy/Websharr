@@ -13,6 +13,7 @@ class Config:
         self.complete_dir = Path(os.environ.get("COMPLETE_DIR", "/downloads/complete"))
         self.incomplete_dir = Path(os.environ.get("INCOMPLETE_DIR", "/downloads/incomplete"))
         self.state_file = Path(os.environ.get("STATE_FILE", "/config/state.json"))
+        self.settings_file = Path(os.environ.get("SETTINGS_FILE", "/config/settings.json"))
         self.max_concurrent = int(os.environ.get("MAX_CONCURRENT_DOWNLOADS", "2"))
         self.search_limit = int(os.environ.get("SEARCH_LIMIT", "60"))
         self.log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
