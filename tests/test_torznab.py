@@ -188,3 +188,18 @@ def test_nzb_download(client):
     assert resp.headers["content-type"].startswith("application/x-nzb")
     assert b"websharr_ident" in resp.content
     assert b"id1" in resp.content
+
+
+def test_nzb_download_non_ascii_name(client):
+    # CZ names ("Řád") aren't latin-1; the Content-Disposition must not 500.
+    resp = client.get("/torznab/nzb/epk1", params={
+        "apikey": "testkey",
+        "name": "Skvrna 06 - Řád (Cajda).mp4",
+        "size": "578013708",
+        "nzbname": "Skvrna S01E06 - Skvrna 06 - Řád (Cajda) 1080p",
+    })
+    assert resp.status_code == 200
+    cd = resp.headers["content-disposition"]
+    assert "filename*=UTF-8''" in cd
+    # header value stays latin-1 encodable (no raw non-ascii)
+    cd.encode("latin-1")

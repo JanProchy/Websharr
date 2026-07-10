@@ -366,8 +366,14 @@ async def torznab_nzb(ident: str, request: Request):
     # name, so the download folder carries SxxEyy for import.
     stem = request.query_params.get("nzbname") or \
         (name.rsplit(".", 1)[0] if "." in name else name)
+    filename = f"{stem}.nzb"
+    # HTTP headers are latin-1; CZ names (Řád, …) aren't. Use RFC 5987 filename*
+    # plus an ASCII fallback so the response doesn't 500 on non-latin-1 chars.
+    ascii_name = re.sub(r"[^\x20-\x7e]", "_", filename).replace('"', "_")
+    encoded = urllib.parse.quote(filename)
+    disposition = f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded}"
     return Response(
         content=content,
         media_type="application/x-nzb",
-        headers={"Content-Disposition": f'attachment; filename="{stem}.nzb"'},
+        headers={"Content-Disposition": disposition},
     )
