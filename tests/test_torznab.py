@@ -1,6 +1,6 @@
 import xml.etree.ElementTree as ET
 
-from app.torznab import build_queries, release_title
+from app.torznab import build_queries, matches_query, release_title
 from app.webshare import SearchResult
 
 TZNS = "{http://torznab.com/schemas/2015/feed}"
@@ -26,6 +26,35 @@ def test_release_title_normalizes_for_tvsearch():
     assert release_title("Skvrna", "2", None, "whatever.mkv") == "Skvrna S02 - whatever"
     # Non-tv search leaves the name (stem) untouched.
     assert release_title("Vlny 2024", None, None, "Vlny.2024.1080p.mkv") == "Vlny.2024.1080p"
+
+
+def test_matches_query_drops_loose_fulltext_hits():
+    # The show name must appear; episode markers/numbers aren't required to match.
+    assert matches_query("Skvrna S01E05", "Skvrna 05 - Bestie (Cajda).mp4")
+    assert matches_query("Skvrna S01E05", "Skvrna S01E05 1080p CZ.mkv")
+    # Webshare's junk hits that merely share "S01E05"/"05" are rejected.
+    assert not matches_query("Skvrna S01E05", "Our.Planet.2019.S01E05.2160p.mkv")
+    assert not matches_query("Skvrna S01E05", "WWE Monday Night Raw S34E01.mkv")
+    assert not matches_query("Skvrna S01E05", "Farscape.S04.05.1080p.mkv")
+    # Diacritics-insensitive, multi-word titles need every word.
+    assert matches_query("Zaklinac", "Zaklínač.S01E03.1080p.mkv")
+    assert not matches_query("House of the Dragon", "The Dragon Prince S01E05.mkv")
+
+
+def test_search_filters_garbage_results(client, fake_webshare):
+    fake_webshare.fuzzy = True  # Webshare returns everything, like real fulltext
+    fake_webshare.results = [
+        SearchResult("good", "Skvrna 05 - Bestie.mkv", 800_000_000),
+        SearchResult("wwe", "WWE.Monday.Night.Raw.S34E01.2160p.mkv", 5_000_000_000),
+        SearchResult("planet", "Our.Planet.2019.S01E05.2160p.mkv", 4_000_000_000),
+    ]
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "q": "Skvrna", "season": "1", "ep": "5",
+    })
+    root = ET.fromstring(resp.content)
+    titles = [i.findtext("title") for i in root.findall("channel/item")]
+    # Only the real Skvrna file survives; it is normalized to a parseable name.
+    assert titles == ["Skvrna S01E05 - Skvrna 05 - Bestie"]
 
 
 def test_caps(client):

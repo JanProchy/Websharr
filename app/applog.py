@@ -6,6 +6,7 @@ Websharr is doing on the wire — including the Sonarr/Radarr HTTP requests
 """
 
 import logging
+import re
 from collections import deque
 from threading import Lock
 
@@ -19,12 +20,19 @@ _SEQ = 0
 _TARGET_LOGGERS = ("", "uvicorn.access", "uvicorn.error")
 
 
+# The UI polls these endpoints every couple of seconds; their access-log lines
+# would drown out everything interesting, so keep them out of the buffer.
+_SPAM = re.compile(r"GET /ui/api/(status|queue|history|log)\b")
+
+
 class RingBufferHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         global _SEQ
         try:
             message = record.getMessage()
         except Exception:  # noqa: BLE001 — never let logging break the app
+            return
+        if record.name == "uvicorn.access" and _SPAM.search(message):
             return
         with _LOCK:
             _SEQ += 1

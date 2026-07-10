@@ -12,7 +12,6 @@ so it never needs to be hard-coded in JS.
 import asyncio
 import logging
 import secrets
-import unicodedata
 import urllib.parse
 from dataclasses import asdict
 from pathlib import Path
@@ -26,7 +25,13 @@ from .applog import records as log_records
 from .config import config
 from .downloads import DownloadManager, Job
 from .settings import SESSION_TTL, hash_password, settings, verify_password
-from .torznab import VIDEO_EXTENSIONS, build_queries, release_title
+from .torznab import (
+    VIDEO_EXTENSIONS,
+    build_queries,
+    matches_query,
+    relevance,
+    release_title,
+)
 from .webshare import SearchResult, WebshareError
 
 logger = logging.getLogger("websharr.ui")
@@ -286,30 +291,6 @@ def _is_video(name: str) -> bool:
     return name.lower().endswith(VIDEO_EXTENSIONS)
 
 
-def _normalize(text: str) -> str:
-    """Lowercase, strip diacritics, collapse punctuation to spaces."""
-    text = unicodedata.normalize("NFKD", text.lower())
-    text = "".join(c for c in text if not unicodedata.combining(c))
-    return "".join(c if c.isalnum() else " " for c in text)
-
-
-def _relevance(queries: list[str], name: str) -> float:
-    """Fraction of query tokens present in the file name (best query wins).
-
-    Webshare's fulltext search is fuzzy — for "zaklinac s01e03" it happily
-    returns other episodes too, so size alone is a bad ranking.
-    """
-    name_tokens = set(_normalize(name).split())
-    best = 0.0
-    for query in queries:
-        q_tokens = _normalize(query).split()
-        if not q_tokens:
-            continue
-        score = sum(1 for t in q_tokens if t in name_tokens) / len(q_tokens)
-        best = max(best, score)
-    return best
-
-
 def _result_json(request: Request, r: SearchResult, release: str) -> dict:
     base = str(request.base_url).rstrip("/")
     nzb_url = (
@@ -361,10 +342,12 @@ async def ui_search(request: Request):
         for r in results:
             if r.ident in seen or r.password or not _is_video(r.name):
                 continue
+            if not matches_query(q, r.name):
+                continue  # drop Webshare's loose non-matching fulltext hits
             seen.add(r.ident)
             merged.append(r)
 
-    merged.sort(key=lambda r: (-_relevance(queries, r.name), -r.size))
+    merged.sort(key=lambda r: (-relevance(queries, r.name), -r.size))
     season = params.get("season") if t == "tvsearch" else None
     ep = params.get("ep") if t == "tvsearch" else None
     return {

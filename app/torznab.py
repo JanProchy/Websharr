@@ -13,7 +13,9 @@ parses correctly either way.
 
 import email.utils
 import logging
+import re
 import time
+import unicodedata
 import urllib.parse
 import xml.etree.ElementTree as ET
 
@@ -122,6 +124,47 @@ def _is_video(name: str) -> bool:
     return name.lower().endswith(VIDEO_EXTENSIONS)
 
 
+_EP_TOKEN = re.compile(r"^(s\d{1,2}e\d{1,3}|s\d{1,2}|\d{1,2}x\d{1,3}|\d{1,4})$")
+
+
+def normalize_text(text: str) -> str:
+    """Lowercase, strip diacritics, split punctuation to spaces."""
+    text = unicodedata.normalize("NFKD", (text or "").lower())
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    return "".join(c if c.isalnum() else " " for c in text)
+
+
+def _series_tokens(query: str) -> list[str]:
+    """Query tokens that name the show/movie — numbers and SxxEyy/1x05
+    episode markers dropped, so only the title words remain."""
+    return [t for t in normalize_text(query).split() if not _EP_TOKEN.match(t)]
+
+
+def matches_query(query: str, name: str) -> bool:
+    """True when every title word of the query appears in the file name.
+
+    Webshare's fulltext is loose — a "Skvrna S01E05" search also returns any
+    file merely containing "S01E05"/"05" (WWE, football, Our Planet...). This
+    drops those while keeping the right show at any episode/naming.
+    """
+    tokens = _series_tokens(query)
+    if not tokens:
+        return True
+    ntoks = set(normalize_text(name).split())
+    return all(t in ntoks for t in tokens)
+
+
+def relevance(queries: list[str], name: str) -> float:
+    """Best fraction of a query's tokens present in the file name."""
+    ntoks = set(normalize_text(name).split())
+    best = 0.0
+    for q in queries:
+        qt = normalize_text(q).split()
+        if qt:
+            best = max(best, sum(1 for t in qt if t in ntoks) / len(qt))
+    return best
+
+
 def _render_feed(request: Request, results: list[SearchResult], category: str,
                  *, query: str | None = None, season: str | None = None,
                  ep: str | None = None) -> Response:
@@ -216,10 +259,12 @@ async def torznab_api(request: Request):
         for r in results:
             if r.ident in seen or r.password or not _is_video(r.name):
                 continue
+            if not matches_query(q, r.name):
+                continue  # drop Webshare's loose non-matching fulltext hits
             seen.add(r.ident)
             merged.append(r)
 
-    merged.sort(key=lambda r: r.size, reverse=True)
+    merged.sort(key=lambda r: (-relevance(queries, r.name), -r.size))
     logger.info("Newznab %s q=%r -> %d results", t, q, len(merged))
     season = params.get("season") if t == "tvsearch" else None
     return _render_feed(request, merged[:limit], category,
