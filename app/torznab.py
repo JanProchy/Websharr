@@ -161,17 +161,20 @@ def _series_tokens(query: str) -> list[str]:
 
 
 def matches_query(query: str, name: str) -> bool:
-    """True when every title word of the query appears in the file name.
+    """True when the file name *starts with* the query's title words.
 
     Webshare's fulltext is loose — a "Skvrna S01E05" search also returns any
-    file merely containing "S01E05"/"05" (WWE, football, Our Planet...). This
-    drops those while keeping the right show at any episode/naming.
+    file merely containing "S01E05"/"05" (WWE, football, Our Planet...), and
+    when the show name is a common word ("skvrna" = stain) also unrelated
+    titles that happen to include it ("Lidská skvrna", "...A slepá skvrna").
+    Requiring the name to *begin* with the title tokens keeps "Skvrna 05 -
+    Bestie" while dropping those.
     """
     tokens = _series_tokens(query)
     if not tokens:
         return True
-    ntoks = set(normalize_text(name).split())
-    return all(t in ntoks for t in tokens)
+    ntoks = normalize_text(name).split()
+    return ntoks[:len(tokens)] == tokens
 
 
 def relevance(queries: list[str], name: str) -> float:

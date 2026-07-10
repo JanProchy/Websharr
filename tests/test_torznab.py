@@ -38,16 +38,21 @@ def test_parse_query_extracts_episode_from_text():
     assert parse_query("movie", "Vlny 2024", None, None) == ("movie", "Vlny 2024", None, None)
 
 
-def test_matches_query_drops_loose_fulltext_hits():
-    # The show name must appear; episode markers/numbers aren't required to match.
+def test_matches_query_requires_name_to_start_with_title():
+    # The name must begin with the show title; episode markers aren't required.
     assert matches_query("Skvrna S01E05", "Skvrna 05 - Bestie (Cajda).mp4")
     assert matches_query("Skvrna S01E05", "Skvrna S01E05 1080p CZ.mkv")
-    # Webshare's junk hits that merely share "S01E05"/"05" are rejected.
+    # Junk that merely shares "S01E05"/"05" is rejected.
     assert not matches_query("Skvrna S01E05", "Our.Planet.2019.S01E05.2160p.mkv")
     assert not matches_query("Skvrna S01E05", "WWE Monday Night Raw S34E01.mkv")
-    assert not matches_query("Skvrna S01E05", "Farscape.S04.05.1080p.mkv")
-    # Diacritics-insensitive, multi-word titles need every word.
+    # Unrelated titles that merely contain the common word "skvrna" — rejected
+    # because they don't *start* with it (the real false positives we hit).
+    assert not matches_query("Skvrna S01E05", "2 Socky S01e15 FHD 1080p CZ A slepá skvrna.mkv")
+    assert not matches_query("Skvrna", "Lidská skvrna (2003) en+Cz dabing.mkv")
+    assert not matches_query("Skvrna", "TO - Vítejte v Derry 2025 CZ - Černá skvrna.mkv")
+    # Diacritics-insensitive, multi-word titles need every word in order.
     assert matches_query("Zaklinac", "Zaklínač.S01E03.1080p.mkv")
+    assert matches_query("House of the Dragon", "House.of.the.Dragon.S01E05.mkv")
     assert not matches_query("House of the Dragon", "The Dragon Prince S01E05.mkv")
 
 
