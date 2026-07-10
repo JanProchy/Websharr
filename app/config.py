@@ -8,6 +8,7 @@ class Config:
     def __init__(self) -> None:
         self.webshare_username = os.environ.get("WEBSHARE_USERNAME", "")
         self.webshare_password = os.environ.get("WEBSHARE_PASSWORD", "")
+        self.webshare_password_digest = ""  # filled from settings.json, never from env
         # Single shared key used both as the Torznab apikey and the SABnzbd apikey.
         # Empty env var counts as unset (compose passes empty defaults).
         self.api_key = os.environ.get("WEBSHARR_API_KEY") or "websharr"

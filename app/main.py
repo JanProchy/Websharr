@@ -31,7 +31,24 @@ async def lifespan(app: FastAPI):
     settings.load()
     settings.ensure_api_key()
     settings.apply()
-    client = WebshareClient(config.webshare_username, config.webshare_password)
+    client = WebshareClient(config.webshare_username, config.webshare_password,
+                            config.webshare_password_digest)
+
+    # Legacy settings.json stored the Webshare password in plaintext —
+    # convert it to the login digest so the real password leaves the disk.
+    if settings.webshare_password and settings.webshare_username:
+        try:
+            digest = await client.compute_digest(
+                settings.webshare_username, settings.webshare_password)
+            settings.webshare_password = ""
+            settings.webshare_password_digest = digest
+            settings.save()
+            settings.apply()
+            client.set_credentials(config.webshare_username,
+                                   password_digest=config.webshare_password_digest)
+            logger.info("Migrated stored Webshare password to a login digest")
+        except Exception as exc:
+            logger.warning("Webshare password not migrated to digest yet: %s", exc)
     manager = DownloadManager(
         client=client,
         complete_dir=config.complete_dir,

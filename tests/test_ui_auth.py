@@ -1,6 +1,6 @@
 """Tests for the first-run setup, login sessions and the settings API."""
 
-from .conftest import FakeWebshareClient
+from .conftest import FakeWebshareClient, fake_digest
 
 
 def _setup(client, **over):
@@ -75,19 +75,62 @@ def test_settings_roundtrip_and_live_client_update(client, fake_webshare):
     s = client.get("/ui/api/settings").json()
     assert s["ui_username"] == "morte"
     assert s["webshare_username"] == "ws@example.com"
-    assert s["webshare_password_set"] is True
     assert s["api_key"]  # generated (or kept from env) and visible for copying
 
     resp = client.post("/ui/api/settings", json={
         "webshare_username": "jina@example.com", "webshare_password": "novepass"})
     assert resp.json()["ok"] is True
-    # The live client used by the download manager got the new credentials.
+    # The live client got the new account as a digest, not the plaintext.
     assert fake_webshare.username == "jina@example.com"
-    assert fake_webshare.password == "novepass"
+    assert fake_webshare.password_digest == fake_digest("jina@example.com", "novepass")
 
-    # Empty password field means "keep the current password".
+    # Empty password field means "keep the current credentials".
     client.post("/ui/api/settings", json={"webshare_username": "jina@example.com"})
-    assert fake_webshare.password == "novepass"
+    assert fake_webshare.password_digest == fake_digest("jina@example.com", "novepass")
+
+    # Switching accounts without a password is refused (digest is per-account).
+    resp = client.post("/ui/api/settings", json={"webshare_username": "treti@example.com"})
+    assert resp.status_code == 400
+
+
+def test_webshare_password_never_stored_in_plaintext(client):
+    from app.config import config
+    import json
+
+    _setup(client)  # webshare_password="wspass"
+    data = json.loads(config.settings_file.read_text())
+    assert data["webshare"]["password"] == ""
+    assert "wspass" not in config.settings_file.read_text()
+    assert data["webshare"]["password_digest"] == fake_digest("ws@example.com", "wspass")
+
+
+def test_legacy_plaintext_password_migrates_on_startup(tmp_path, monkeypatch):
+    import json
+
+    import app.main as app_main
+    from fastapi.testclient import TestClient
+
+    from app.config import config
+    from app.main import app
+
+    monkeypatch.setattr(config, "api_key", "testkey")
+    monkeypatch.setattr(config, "complete_dir", tmp_path / "complete")
+    monkeypatch.setattr(config, "incomplete_dir", tmp_path / "incomplete")
+    monkeypatch.setattr(config, "state_file", tmp_path / "state.json")
+    monkeypatch.setattr(config, "settings_file", tmp_path / "settings.json")
+    monkeypatch.setattr(app_main, "WebshareClient", FakeWebshareClient)
+
+    (tmp_path / "settings.json").write_text(json.dumps({
+        "auth": {"username": "morte", "password_hash": "pbkdf2:1:aa:bb"},
+        "webshare": {"username": "ws@example.com", "password": "tajne-heslo"},
+        "api_key": "k", "secret": "s" * 64,
+    }))
+
+    with TestClient(app):
+        data = json.loads((tmp_path / "settings.json").read_text())
+        assert data["webshare"]["password"] == ""
+        assert data["webshare"]["password_digest"] == fake_digest("ws@example.com", "tajne-heslo")
+        assert "tajne-heslo" not in (tmp_path / "settings.json").read_text()
 
 
 def test_change_ui_password(client):

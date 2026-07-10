@@ -106,9 +106,12 @@ def _text(root: ET.Element, tag: str, default: str = "") -> str:
 
 
 class WebshareClient:
-    def __init__(self, username: str, password: str):
+    def __init__(self, username: str, password: str, password_digest: str = ""):
         self._username = username
         self._password = password
+        # sha1(md5crypt(password, salt)) — what /login/ actually consumes.
+        # Storing this instead of the plaintext keeps the real password off disk.
+        self._password_digest = password_digest
         self._token: str | None = None
         self._token_ts: float = 0.0
         self._login_lock = asyncio.Lock()
@@ -121,10 +124,12 @@ class WebshareClient:
     async def close(self) -> None:
         await self._http.aclose()
 
-    def set_credentials(self, username: str, password: str) -> None:
+    def set_credentials(self, username: str, password: str = "",
+                        password_digest: str = "") -> None:
         """Swap the account at runtime (settings change); drops the token."""
         self._username = username
         self._password = password
+        self._password_digest = password_digest
         self._token = None
         self._token_ts = 0.0
 
@@ -132,6 +137,12 @@ class WebshareClient:
         """Force a fresh login; returns the username on success."""
         await self._get_token(force=True)
         return self._username
+
+    async def compute_digest(self, username: str, password: str) -> str:
+        """Login digest for the account: sha1(md5crypt(password, salt))."""
+        salt_root = await self._post("/salt/", {"username_or_email": username})
+        salt = _text(salt_root, "salt")
+        return hashlib.sha1(md5crypt(password, salt).encode()).hexdigest()
 
     async def _post(self, path: str, data: dict) -> ET.Element:
         resp = await self._http.post(path, data=data)
@@ -146,13 +157,12 @@ class WebshareClient:
         return root
 
     async def _login(self) -> str:
-        if not self._username or not self._password:
-            raise WebshareError("WEBSHARE_USERNAME / WEBSHARE_PASSWORD not configured")
+        if not self._username or not (self._password or self._password_digest):
+            raise WebshareError("Webshare credentials not configured")
 
-        salt_root = await self._post("/salt/", {"username_or_email": self._username})
-        salt = _text(salt_root, "salt")
-
-        password_hash = hashlib.sha1(md5crypt(self._password, salt).encode()).hexdigest()
+        password_hash = self._password_digest
+        if not password_hash:
+            password_hash = await self.compute_digest(self._username, self._password)
         login_root = await self._post(
             "/login/",
             {

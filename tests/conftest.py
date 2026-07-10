@@ -1,3 +1,4 @@
+import hashlib
 import time
 
 import pytest
@@ -9,27 +10,40 @@ from app.main import app
 from app.webshare import SearchResult
 
 
+def fake_digest(username: str, password: str) -> str:
+    """Opaque digest used by FakeWebshareClient (must not contain the password)."""
+    return hashlib.md5(f"{username}:{password}".encode()).hexdigest()
+
+
 class FakeWebshareClient:
     """Stand-in for WebshareClient: serves canned search results and links."""
 
     fail_login = False  # class-level so tests can flip it for new instances
 
-    def __init__(self, username: str = "", password: str = ""):
+    def __init__(self, username: str = "", password: str = "", password_digest: str = ""):
         self.username = username
         self.password = password
+        self.password_digest = password_digest
         self.results: list[SearchResult] = []
         self.fuzzy = False  # True = return everything, like Webshare fulltext
         self.file_link_url = "http://127.0.0.1:1/file.mkv"  # unreachable by default
 
-    def set_credentials(self, username: str, password: str):
+    def set_credentials(self, username: str, password: str = "", password_digest: str = ""):
         self.username = username
         self.password = password
+        self.password_digest = password_digest
 
     async def check_login(self) -> str:
         from app.webshare import WebshareError
         if self.fail_login:
             raise WebshareError("Webshare /login/ failed: Invalid credentials")
         return self.username
+
+    async def compute_digest(self, username: str, password: str) -> str:
+        from app.webshare import WebshareError
+        if self.fail_login:
+            raise WebshareError("Webshare /salt/ failed: User not found.")
+        return fake_digest(username, password)
 
     async def search(self, query: str, limit: int = 60, offset: int = 0):
         if self.fuzzy:

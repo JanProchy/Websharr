@@ -46,7 +46,8 @@ class Settings:
         self.auth_username = ""
         self.auth_password_hash = ""
         self.webshare_username = ""
-        self.webshare_password = ""
+        self.webshare_password = ""  # legacy plaintext; migrated to digest at startup
+        self.webshare_password_digest = ""
         self.api_key = ""
         self.secret = secrets.token_hex(32)
 
@@ -70,6 +71,7 @@ class Settings:
         ws = data.get("webshare", {})
         self.webshare_username = ws.get("username", "")
         self.webshare_password = ws.get("password", "")
+        self.webshare_password_digest = ws.get("password_digest", "")
         self.api_key = data.get("api_key", "")
         self.secret = data.get("secret") or self.secret
 
@@ -78,7 +80,11 @@ class Settings:
         path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "auth": {"username": self.auth_username, "password_hash": self.auth_password_hash},
-            "webshare": {"username": self.webshare_username, "password": self.webshare_password},
+            "webshare": {
+                "username": self.webshare_username,
+                "password": self.webshare_password,
+                "password_digest": self.webshare_password_digest,
+            },
             "api_key": self.api_key,
             "secret": self.secret,
         }
@@ -103,6 +109,7 @@ class Settings:
         if self.webshare_username:
             config.webshare_username = self.webshare_username
             config.webshare_password = self.webshare_password
+            config.webshare_password_digest = self.webshare_password_digest
 
     # -- session cookies ----------------------------------------------------
 

@@ -93,15 +93,29 @@ async def ui_setup(request: Request):
             {"error": "Username and a password of at least 4 characters are required"},
             status_code=400)
 
+    ws_user = (body.get("webshare_username") or "").strip()
+    ws_pass = body.get("webshare_password") or ""
+    digest = ""
+    if ws_user and ws_pass:
+        # Store the login digest instead of the plaintext password.
+        try:
+            digest = await request.app.state.webshare.compute_digest(ws_user, ws_pass)
+        except (WebshareError, httpx.HTTPError) as exc:
+            return JSONResponse(
+                {"error": f"Could not reach Webshare.cz to store the password securely: {exc}"},
+                status_code=502)
+
     settings.auth_username = username
     settings.auth_password_hash = hash_password(password)
-    settings.webshare_username = (body.get("webshare_username") or "").strip()
-    settings.webshare_password = body.get("webshare_password") or ""
+    settings.webshare_username = ws_user
+    settings.webshare_password = ""
+    settings.webshare_password_digest = digest
     # Keep an explicitly configured key; otherwise generate one (shown in Settings).
     settings.api_key = config.api_key if config.api_key != "websharr" else secrets.token_hex(16)
     settings.save()
     settings.apply()
-    request.app.state.webshare.set_credentials(config.webshare_username, config.webshare_password)
+    request.app.state.webshare.set_credentials(
+        config.webshare_username, config.webshare_password, config.webshare_password_digest)
     logger.info("Initial setup completed (user=%s)", username)
 
     resp = JSONResponse({"ok": True})
@@ -152,10 +166,27 @@ async def ui_settings_post(request: Request):
     body = await request.json()
 
     if "webshare_username" in body:
-        settings.webshare_username = (body.get("webshare_username") or "").strip()
+        ws_user = (body.get("webshare_username") or "").strip()
         new_pass = body.get("webshare_password") or ""
-        # Empty password field means "keep the current one".
-        settings.webshare_password = new_pass or settings.webshare_password or config.webshare_password
+        if new_pass:
+            try:
+                digest = await request.app.state.webshare.compute_digest(ws_user, new_pass)
+            except (WebshareError, httpx.HTTPError) as exc:
+                return JSONResponse(
+                    {"error": f"Could not reach Webshare.cz to store the password securely: {exc}"},
+                    status_code=502)
+            settings.webshare_password = ""
+            settings.webshare_password_digest = digest
+        elif ws_user != config.webshare_username:
+            # The digest is salted per account, so a new account needs its password.
+            return JSONResponse(
+                {"error": "Enter the Webshare password when changing the account"},
+                status_code=400)
+        elif not settings.webshare_password_digest and not settings.webshare_password:
+            # Credentials so far came from env vars only; carry the password over
+            # (it gets converted to a digest on the next startup).
+            settings.webshare_password = config.webshare_password
+        settings.webshare_username = ws_user
 
     if body.get("new_password"):
         if not verify_password(body.get("current_password") or "", settings.auth_password_hash):
@@ -169,7 +200,8 @@ async def ui_settings_post(request: Request):
 
     settings.save()
     settings.apply()
-    request.app.state.webshare.set_credentials(config.webshare_username, config.webshare_password)
+    request.app.state.webshare.set_credentials(
+        config.webshare_username, config.webshare_password, config.webshare_password_digest)
     return {"ok": True, "api_key": config.api_key}
 
 
@@ -184,11 +216,14 @@ async def ui_test_webshare(request: Request):
     body = await request.json()
     username = (body.get("username") or "").strip() or config.webshare_username
     password = body.get("password") or config.webshare_password
-    if not username or not password:
+    digest = ""
+    if not password and username == config.webshare_username:
+        digest = config.webshare_password_digest  # test the stored credentials
+    if not username or not (password or digest):
         return {"ok": False, "error": "Username and password are required"}
 
     client_cls = type(request.app.state.webshare)
-    tmp = client_cls(username, password)
+    tmp = client_cls(username, password, digest)
     try:
         user = await tmp.check_login()
         return {"ok": True, "username": user}
