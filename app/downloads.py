@@ -80,6 +80,14 @@ class DownloadManager:
         self._jobs: dict[str, Job] = {}
         self._tasks: dict[str, asyncio.Task] = {}
 
+    def ensure_dirs(self) -> None:
+        """Pre-create the category folders so *arr's download-client health
+        check ("directory does not exist inside the container") passes before
+        the first download of that category completes."""
+        self._incomplete_dir.mkdir(parents=True, exist_ok=True)
+        for category in ("tv", "movies"):
+            (self._complete_dir / category).mkdir(parents=True, exist_ok=True)
+
     # -- persistence -------------------------------------------------------
 
     def load_state(self) -> None:

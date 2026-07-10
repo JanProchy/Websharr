@@ -58,6 +58,7 @@ async def lifespan(app: FastAPI):
         state_file=config.state_file,
         max_concurrent=config.max_concurrent,
     )
+    manager.ensure_dirs()
     manager.load_state()
     manager.resume_pending()
     app.state.webshare = client

@@ -198,6 +198,13 @@ def test_retry_failed_job(client, fake_webshare, tmp_path):
         httpd.shutdown()
 
 
+def test_ensure_dirs_creates_category_folders(tmp_path, monkeypatch):
+    with _start_app(tmp_path, monkeypatch, "http://127.0.0.1:1/x"):
+        assert (tmp_path / "complete" / "tv").is_dir()
+        assert (tmp_path / "complete" / "movies").is_dir()
+        assert (tmp_path / "incomplete").is_dir()
+
+
 def test_retry_unknown_job(client):
     resp = client.get("/sabnzbd/api", params={
         "mode": "retry", "apikey": "testkey", "value": "SABnzbd_nzo_nonexistent",
