@@ -1,6 +1,7 @@
 import xml.etree.ElementTree as ET
 
 from app.torznab import (
+    alias_titles,
     build_queries,
     file_episode,
     matches_query,
@@ -60,6 +61,18 @@ def test_matches_query_requires_name_to_start_with_title():
     assert matches_query("Zaklinac", "Zaklínač.S01E03.1080p.mkv")
     assert matches_query("House of the Dragon", "House.of.the.Dragon.S01E05.mkv")
     assert not matches_query("House of the Dragon", "The Dragon Prince S01E05.mkv")
+
+
+def test_alias_titles_and_multi_title_matching():
+    aliases = [{"from": "The Sleepers", "to": "Bez vědomí"}]
+    assert alias_titles("The Sleepers", aliases) == ["Bez vědomí"]
+    assert alias_titles("Something Else", aliases) == []
+    # A CZ file matches via the alias title even though the query is English.
+    titles = ["The Sleepers"] + alias_titles("The Sleepers", aliases)
+    assert matches_query(titles, "Bez.vedomi.S01E01.2019.CZ.mkv")
+    assert not matches_query(["The Sleepers"], "Bez.vedomi.S01E01.2019.CZ.mkv")
+    # Episode detected after the matched (Czech) title.
+    assert file_episode(titles, "Bez.vedomi.S01E01.2019.CZ.mkv") == 1
 
 
 def test_file_episode():

@@ -25,6 +25,7 @@ from fastapi import APIRouter, Request, Response
 
 from .config import config
 from .nzb import build_nzb
+from .settings import settings
 from .webshare import SearchResult, WebshareError
 
 logger = logging.getLogger("websharr.torznab")
@@ -185,39 +186,61 @@ def _series_tokens(query: str) -> list[str]:
     return [t for t in normalize_text(query).split() if not _EP_TOKEN.match(t)]
 
 
-def matches_query(query: str, name: str) -> bool:
-    """True when the file name *starts with* the query's title words.
+def _as_titles(query) -> list[str]:
+    return [query] if isinstance(query, str) else list(query)
+
+
+def alias_titles(query: str, aliases: list[dict]) -> list[str]:
+    """Extra Webshare/CZ titles for a query, from the user's alias map — an
+    alias applies when its `from` (a *arr title) appears in the query."""
+    nq = normalize_text(query)
+    out = []
+    for a in aliases or []:
+        frm, to = normalize_text(a.get("from", "")), (a.get("to") or "").strip()
+        if frm and to and frm in nq:
+            out.append(to)
+    return out
+
+
+def matches_query(query, name: str) -> bool:
+    """True when the file name *starts with* the title words of the query (or of
+    any of its alias titles, when a list is passed).
 
     Webshare's fulltext is loose — a "Skvrna S01E05" search also returns any
-    file merely containing "S01E05"/"05" (WWE, football, Our Planet...), and
-    when the show name is a common word ("skvrna" = stain) also unrelated
-    titles that happen to include it ("Lidská skvrna", "...A slepá skvrna").
-    Requiring the name to *begin* with the title tokens keeps "Skvrna 05 -
-    Bestie" while dropping those.
+    file merely containing "S01E05"/"05" (WWE, football...), and for common-word
+    titles unrelated files too. Requiring the name to *begin* with the title
+    keeps the right ones; multiple titles let a CZ alias ("Bez vědomí") match a
+    query whose *arr title is English ("The Sleepers").
     """
-    tokens = _series_tokens(query)
-    if not tokens:
-        return True
     ntoks = normalize_text(name).split()
-    return ntoks[:len(tokens)] == tokens
+    for title in _as_titles(query):
+        tokens = _series_tokens(title)
+        if not tokens:
+            return True
+        if ntoks[:len(tokens)] == tokens:
+            return True
+    return False
 
 
-def file_episode(query: str, name: str) -> int | None:
+def file_episode(query, name: str) -> int | None:
     """Episode number implied by the file name, read from the first marker
-    after the show title: SxxEyy, 1x05, or a bare "05". None if none found.
+    after the (matched) show title: SxxEyy, 1x05, or a bare "05".
 
     Webshare fulltext is OR-based, so a "Skvrna 05" query returns every Skvrna
-    episode; this lets the search keep only the episode actually asked for
-    instead of mislabeling "Skvrna 01 - Pohřeb" as S01E05.
+    episode; this keeps only the episode actually asked for.
     """
-    series = _series_tokens(query)
-    toks = normalize_text(name).split()
-    for tk in toks[len(series):]:
-        m = re.match(r"^s\d{1,2}e(\d{1,3})$", tk) or re.match(r"^\d{1,2}x(\d{1,3})$", tk)
-        if m:
-            return int(m.group(1))
-        if tk.isdigit() and len(tk) <= 2:  # bare episode number (skip years/1080)
-            return int(tk)
+    ntoks = normalize_text(name).split()
+    for title in _as_titles(query):
+        series = _series_tokens(title)
+        if series and ntoks[:len(series)] != series:
+            continue  # this title isn't the one the file starts with
+        for tk in ntoks[len(series):]:
+            m = re.match(r"^s\d{1,2}e(\d{1,3})$", tk) or re.match(r"^\d{1,2}x(\d{1,3})$", tk)
+            if m:
+                return int(m.group(1))
+            if tk.isdigit() and len(tk) <= 2:  # bare episode number (skip years/1080)
+                return int(tk)
+        break
     return None
 
 
@@ -299,7 +322,14 @@ async def torznab_api(request: Request):
         return _error(203, f"Function '{t}' not available")
 
     t, q, season, ep = parse_query(t, params.get("q", ""), params.get("season"), params.get("ep"))
-    queries = build_queries(t, q, season, ep)
+    # A *arr query may match a Webshare/CZ title in the user's alias map; search
+    # both and accept files matching either title.
+    titles = [q] + alias_titles(q, settings.aliases)
+    queries = []
+    for title in titles:
+        for v in build_queries(t, title, season, ep):
+            if v not in queries:
+                queries.append(v)
     category = CAT_TV if t == "tvsearch" else CAT_MOVIES
 
     if not queries:
@@ -332,9 +362,9 @@ async def torznab_api(request: Request):
         for r in results:
             if r.ident in seen or r.password or not _is_video(r.name):
                 continue
-            if not matches_query(q, r.name):
+            if not matches_query(titles, r.name):
                 continue  # drop Webshare's loose non-matching fulltext hits
-            if want_ep is not None and file_episode(q, r.name) != want_ep:
+            if want_ep is not None and file_episode(titles, r.name) != want_ep:
                 continue  # OR-based fulltext returns every episode; keep the asked one
             seen.add(r.ident)
             merged.append(r)

@@ -50,6 +50,9 @@ class Settings:
         self.webshare_password_digest = ""
         self.api_key = ""
         self.secret = secrets.token_hex(32)
+        # Search aliases: [{"from": "<*arr title>", "to": "<Webshare/CZ title>"}]
+        # so a Sonarr/Radarr query also searches the Czech name a file uses.
+        self.aliases: list[dict] = []
 
     @property
     def configured(self) -> bool:
@@ -74,6 +77,8 @@ class Settings:
         self.webshare_password_digest = ws.get("password_digest", "")
         self.api_key = data.get("api_key", "")
         self.secret = data.get("secret") or self.secret
+        aliases = data.get("aliases", [])
+        self.aliases = [a for a in aliases if a.get("from") and a.get("to")]
 
     def save(self) -> None:
         path = config.settings_file
@@ -87,6 +92,7 @@ class Settings:
             },
             "api_key": self.api_key,
             "secret": self.secret,
+            "aliases": self.aliases,
         }
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         path.chmod(0o600)

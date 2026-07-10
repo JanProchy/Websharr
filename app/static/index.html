@@ -244,6 +244,12 @@
     padding: 8px 18px; font-weight: 800; cursor: pointer; }
   .primary:hover { background: #7ecbf8; }
   .sresult { display: block; font-size: 13px; font-weight: 700; margin-top: 10px; min-height: 16px; }
+  .aliasrow { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .aliasrow input { flex: 1; min-width: 0; margin-top: 0; background: var(--inner);
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; color: var(--text);
+    font-weight: 600; outline: none; }
+  .aliasrow input:focus { border-color: var(--accent); }
+  .aliasrow .arrow { color: var(--faint); font-weight: 800; flex-shrink: 0; }
   @media (max-width: 860px) { .scard { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -462,6 +468,26 @@
 
     <div class="scard">
       <div class="sinfo">
+        <h3>Search aliases</h3>
+        <p class="shint">Sonarr/Radarr search by the title they know (often English);
+          many files on Webshare use the Czech name. Map <b>*arr title → Webshare
+          (Czech) title</b> and Websharr also searches the Czech name — you fill these
+          in yourself (e.g. from the Webshare listing). Matching is loose, so the
+          series/movie name is enough.</p>
+      </div>
+      <div class="sform">
+        <div id="alias-rows"></div>
+        <div class="srow">
+          <button class="accentbtn" id="alias-add">+ Add alias</button>
+          <div class="spacer"></div>
+          <button class="primary" id="alias-save">Save aliases</button>
+        </div>
+        <span class="sresult" id="alias-result"></span>
+      </div>
+    </div>
+
+    <div class="scard">
+      <div class="sinfo">
         <h3>Storage paths</h3>
         <p class="shint">Finished downloads land in <b>completed</b> as
           <code>&lt;category&gt;/&lt;release&gt;/&lt;file&gt;</code>. These are paths
@@ -629,7 +655,36 @@ const App = {
       $("set-ui-user").value = s.ui_username;
       $("set-dir-complete").value = s.complete_dir;
       $("set-dir-incomplete").value = s.incomplete_dir;
+      this.renderAliases(s.aliases || []);
     } catch (e) { /* offline banner already covers this */ }
+  },
+
+  renderAliases(aliases) {
+    const box = $("alias-rows");
+    box.innerHTML = "";
+    const add = (a) => box.insertAdjacentHTML("beforeend", `
+      <div class="aliasrow">
+        <input class="a-from" placeholder="*arr title (e.g. The Sleepers)" value="${esc(a.from || "")}">
+        <span class="arrow">→</span>
+        <input class="a-to" placeholder="Webshare title (e.g. Bez vědomí)" value="${esc(a.to || "")}">
+        <button class="xbtn" title="Remove">✕</button>
+      </div>`);
+    (aliases.length ? aliases : []).forEach(add);
+    box.querySelectorAll(".aliasrow .xbtn").forEach((b) =>
+      b.onclick = () => b.closest(".aliasrow").remove());
+    box._add = add;
+  },
+
+  async saveAliases() {
+    const rows = [...$("alias-rows").querySelectorAll(".aliasrow")];
+    const aliases = rows.map((r) => ({
+      from: r.querySelector(".a-from").value.trim(),
+      to: r.querySelector(".a-to").value.trim(),
+    })).filter((a) => a.from && a.to);
+    try {
+      await uiPost("aliases", { aliases });
+      sresult("alias-result", true, `✓ Saved ${aliases.length} alias${aliases.length === 1 ? "" : "es"}`);
+    } catch (e) { sresult("alias-result", false, e.message); }
   },
 
   typeChanged() {
@@ -1070,6 +1125,17 @@ $("set-pass-save").onclick = async () => {
     $("set-cur-pass").value = ""; $("set-new-pass").value = "";
   } catch (e) { sresult("set-pass-result", false, e.message); }
 };
+
+$("alias-add").onclick = () => {
+  const box = $("alias-rows");
+  if (!box._add) App.renderAliases([]);
+  box._add({ from: "", to: "" });
+  box.querySelectorAll(".aliasrow .xbtn").forEach((b) =>
+    b.onclick = () => b.closest(".aliasrow").remove());
+  const last = box.querySelector(".aliasrow:last-child .a-from");
+  if (last) last.focus();
+};
+$("alias-save").onclick = () => App.saveAliases();
 
 const TABS = ["queue", "history", "search", "log", "help", "settings"];
 const tabFromPath = () => {

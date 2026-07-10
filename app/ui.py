@@ -27,6 +27,7 @@ from .downloads import DownloadManager, Job
 from .settings import SESSION_TTL, hash_password, settings, verify_password
 from .torznab import (
     VIDEO_EXTENSIONS,
+    alias_titles,
     build_queries,
     file_episode,
     matches_query,
@@ -174,7 +175,24 @@ async def ui_settings_get(request: Request):
         "api_key": config.api_key,
         "complete_dir": str(config.complete_dir),
         "incomplete_dir": str(config.incomplete_dir),
+        "aliases": settings.aliases,
     }
+
+
+@router.post("/ui/api/aliases")
+async def ui_aliases_post(request: Request):
+    """Replace the search alias map (*arr title -> Webshare/CZ title)."""
+    if not _authorized(request):
+        return _unauthorized()
+    body = await request.json()
+    clean = []
+    for a in body.get("aliases", []):
+        frm, to = (a.get("from") or "").strip(), (a.get("to") or "").strip()
+        if frm and to:
+            clean.append({"from": frm, "to": to})
+    settings.aliases = clean
+    settings.save()
+    return {"ok": True, "aliases": settings.aliases}
 
 
 @router.post("/ui/api/settings")
@@ -356,7 +374,12 @@ async def ui_search(request: Request):
         return JSONResponse({"error": f"Unknown search type '{t}'"}, status_code=400)
 
     t, q, season, ep = parse_query(t, params.get("q", ""), params.get("season"), params.get("ep"))
-    queries = build_queries(t, q, season, ep)
+    titles = [q] + alias_titles(q, settings.aliases)
+    queries = []
+    for title in titles:
+        for v in build_queries(t, title, season, ep):
+            if v not in queries:
+                queries.append(v)
     if not queries:
         return {"results": [], "queries": []}
 
@@ -375,9 +398,9 @@ async def ui_search(request: Request):
         for r in results:
             if r.ident in seen or r.password or not _is_video(r.name):
                 continue
-            if not matches_query(q, r.name):
+            if not matches_query(titles, r.name):
                 continue  # drop Webshare's loose non-matching fulltext hits
-            if want_ep is not None and file_episode(q, r.name) != want_ep:
+            if want_ep is not None and file_episode(titles, r.name) != want_ep:
                 continue  # OR-based fulltext returns every episode; keep the asked one
             seen.add(r.ident)
             merged.append(r)
