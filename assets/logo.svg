@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <mask id="m1" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+      <rect width="256" height="256" fill="white"/>
+      <circle cx="166" cy="150" r="44" fill="none" stroke="black" stroke-width="32"/>
+    </mask>
+    <mask id="m2" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+      <rect width="256" height="256" fill="white"/>
+      <circle cx="85" cy="153" r="44" fill="none" stroke="black" stroke-width="32"/>
+    </mask>
+    <mask id="m3" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+      <rect width="256" height="256" fill="white"/>
+      <circle cx="128" cy="78" r="44" fill="none" stroke="black" stroke-width="32"/>
+    </mask>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="#0e2638"/>
+  <g fill="none" stroke="#ffffff" stroke-width="20">
+    <circle cx="128" cy="78" r="44" mask="url(#m1)"/>
+    <circle cx="166" cy="150" r="44" mask="url(#m2)"/>
+    <circle cx="85" cy="153" r="44" mask="url(#m3)"/>
+  </g>
+  <circle cx="128" cy="128" r="46" fill="#0e2638"/>
+  <path d="M118 100 L138 100 L138 132 L154 132 L128 160 L102 132 L118 132 Z"
+        fill="none" stroke="#ffffff" stroke-width="9" stroke-linejoin="round"/>
+</svg>

@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <mask id="f1" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+      <rect width="256" height="256" fill="white"/>
+      <circle cx="166" cy="150" r="44" fill="none" stroke="black" stroke-width="38"/>
+    </mask>
+    <mask id="f2" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+      <rect width="256" height="256" fill="white"/>
+      <circle cx="85" cy="153" r="44" fill="none" stroke="black" stroke-width="38"/>
+    </mask>
+    <mask id="f3" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+      <rect width="256" height="256" fill="white"/>
+      <circle cx="128" cy="78" r="44" fill="none" stroke="black" stroke-width="38"/>
+    </mask>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="#0e2638"/>
+  <g fill="none" stroke="#ffffff" stroke-width="26">
+    <circle cx="128" cy="78" r="44" mask="url(#f1)"/>
+    <circle cx="166" cy="150" r="44" mask="url(#f2)"/>
+    <circle cx="85" cy="153" r="44" mask="url(#f3)"/>
+  </g>
+  <circle cx="128" cy="128" r="50" fill="#0e2638"/>
+  <path d="M118 94 L138 94 L138 124 L158 124 L128 160 L98 124 L118 124 Z" fill="#ffffff"/>
+</svg>

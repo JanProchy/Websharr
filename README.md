@@ -1,4 +1,6 @@
-# Websharr
+<p align="center">
+  <img src="assets/logo-wordmark.svg" alt="Websharr" width="520">
+</p>
 
 A bridge between **Webshare.cz** (premium account) and the ***arr stack** (Sonarr/Radarr). A single container that acts as:
 
