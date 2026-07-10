@@ -75,7 +75,12 @@ def _job_json(job: Job) -> dict:
     return data
 
 
-@router.get("/ui", response_class=HTMLResponse)
+# The SPA is served at the bare domain and at each tab's own path, so the URL
+# reads /search, /history, … (no /ui, no #hash) and survives a refresh. The
+# JSON API and assets stay under /ui/api and /ui/assets.
+UI_PATHS = ["/", "/ui", "/queue", "/history", "/search", "/log", "/help", "/settings"]
+
+
 async def ui_index(request: Request):
     if not settings.configured:
         html = (STATIC_DIR / "setup.html").read_text(encoding="utf-8")
@@ -86,6 +91,11 @@ async def ui_index(request: Request):
     html = html.replace("__WEBSHARR_API_KEY__", config.api_key)
     html = html.replace("__WEBSHARR_VERSION__", __version__)
     return HTMLResponse(html)
+
+
+for _p in UI_PATHS:
+    router.add_api_route(_p, ui_index, methods=["GET"], response_class=HTMLResponse,
+                         include_in_schema=False)
 
 
 @router.post("/ui/api/setup")

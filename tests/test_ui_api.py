@@ -20,6 +20,16 @@ def test_ui_page_served_with_key_injected(client):
     assert "__WEBSHARR_API_KEY__" not in resp.text
 
 
+def test_tab_paths_serve_the_app(client):
+    # Each tab has its own clean path (/search, /history, …) serving the SPA,
+    # so a refresh stays put; the bare domain serves it too.
+    client.post("/ui/api/setup", json={"username": "u", "password": "pass1234"})
+    for path in ("/", "/queue", "/history", "/search", "/log", "/help", "/settings", "/ui"):
+        resp = client.get(path)
+        assert resp.status_code == 200, path
+        assert 'id="view-queue"' in resp.text, path
+
+
 def test_ui_assets(client):
     resp = client.get("/ui/assets/favicon.svg")
     assert resp.status_code == 200

@@ -9,7 +9,6 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from fastapi.responses import RedirectResponse
 
 from . import __version__
 from . import applog
@@ -74,12 +73,6 @@ app = FastAPI(title="Websharr", version=__version__, lifespan=lifespan)
 app.include_router(torznab_router)
 app.include_router(sabnzbd_router)
 app.include_router(ui_router)
-
-
-@app.get("/")
-async def root():
-    # The web UI lives at /ui; send the bare domain there.
-    return RedirectResponse(url="/ui")
 
 
 @app.get("/status")
