@@ -19,5 +19,5 @@ services:
         volumes:
             # Must be the SAME host path that Sonarr/Radarr see as their download dir,
             # otherwise use Remote Path Mappings in *arr.
-            - /home/morte/Downloads/__test_downloads/websharr:/downloads
+            - /data/downloads/websharr:/downloads
             - ./config:/config
