@@ -12,6 +12,9 @@ class Config:
         # Single shared key used both as the Torznab apikey and the SABnzbd apikey.
         # Empty env var counts as unset (compose passes empty defaults).
         self.api_key = os.environ.get("WEBSHARR_API_KEY") or "websharr"
+        # TMDB API Read Access Token (v4 bearer) for Czech-title lookups; the UI
+        # value in settings.json overrides this.
+        self.tmdb_token = os.environ.get("TMDB_TOKEN", "")
         self.complete_dir = Path(os.environ.get("COMPLETE_DIR", "/downloads/complete"))
         self.incomplete_dir = Path(os.environ.get("INCOMPLETE_DIR", "/downloads/incomplete"))
         self.state_file = Path(os.environ.get("STATE_FILE", "/config/state.json"))

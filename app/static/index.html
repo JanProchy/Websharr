@@ -346,7 +346,7 @@
 
     <div class="hcard">
       <h3>How the flow works</h3>
-      <svg class="flow" viewBox="0 0 820 300" role="img" aria-label="Media stack flow diagram">
+      <svg class="flow" viewBox="0 0 900 300" role="img" aria-label="Media stack flow diagram">
         <defs>
           <marker id="arw" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
             <path d="M0,0 L7,3 L0,6 Z" fill="#5f7a90"/>
@@ -354,35 +354,44 @@
           <marker id="arwA" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
             <path d="M0,0 L7,3 L0,6 Z" fill="#4db6f5"/>
           </marker>
+          <marker id="arwG" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+            <path d="M0,0 L7,3 L0,6 Z" fill="#45d483"/>
+          </marker>
         </defs>
         <!-- nodes -->
-        <g class="fn"><rect x="24" y="42" width="138" height="52" rx="10"/><text x="93" y="73">Jellyseerr</text></g>
-        <g class="fn"><rect x="214" y="42" width="150" height="52" rx="10"/><text x="289" y="66">Sonarr / Radarr</text><text x="289" y="82" class="sm">*arr</text></g>
-        <g class="fn hub"><rect x="430" y="30" width="180" height="76" rx="10"/><text x="520" y="55">Websharr</text><text x="520" y="72" class="sm">Newznab indexer</text><text x="520" y="88" class="sm">+ SABnzbd client</text></g>
-        <g class="fn"><rect x="672" y="42" width="128" height="52" rx="10"/><text x="736" y="66">Webshare.cz</text><text x="736" y="82" class="sm">premium</text></g>
-        <g class="fn"><rect x="214" y="212" width="150" height="52" rx="10"/><text x="289" y="243">Jellyfin</text></g>
+        <g class="fn"><rect x="24" y="44" width="128" height="52" rx="10"/><text x="88" y="75">Jellyseerr</text></g>
+        <g class="fn"><rect x="200" y="44" width="152" height="52" rx="10"/><text x="276" y="68">Sonarr / Radarr</text><text x="276" y="84" class="sm">direct or via Prowlarr</text></g>
+        <g class="fn hub"><rect x="448" y="30" width="184" height="78" rx="10"/><text x="540" y="55">Websharr</text><text x="540" y="73" class="sm">Newznab indexer</text><text x="540" y="89" class="sm">+ SABnzbd client</text></g>
+        <g class="fn"><rect x="724" y="44" width="148" height="52" rx="10"/><text x="798" y="68">Webshare.cz</text><text x="798" y="84" class="sm">premium</text></g>
+        <g class="fn"><rect x="574" y="212" width="132" height="52" rx="10"/><text x="640" y="236">TMDB</text><text x="640" y="252" class="sm">Czech titles</text></g>
+        <g class="fn"><rect x="200" y="212" width="152" height="52" rx="10"/><text x="276" y="243">Jellyfin</text></g>
 
         <!-- forward arrows -->
-        <line x1="162" y1="68" x2="212" y2="68" stroke="#5f7a90" stroke-width="2" marker-end="url(#arw)"/>
-        <text x="187" y="60" class="lbl">request</text>
-        <line x1="364" y1="68" x2="428" y2="68" stroke="#4db6f5" stroke-width="2" marker-end="url(#arwA)"/>
-        <text x="396" y="60" class="lbl acc">search + grab</text>
+        <line x1="152" y1="70" x2="198" y2="70" stroke="#5f7a90" stroke-width="2" marker-end="url(#arw)"/>
+        <text x="175" y="62" class="lbl">request</text>
+        <line x1="352" y1="70" x2="446" y2="70" stroke="#4db6f5" stroke-width="2" marker-end="url(#arwA)"/>
+        <text x="399" y="62" class="lbl acc">search + grab</text>
         <!-- websharr <-> webshare (download) -->
-        <line x1="610" y1="62" x2="670" y2="62" stroke="#5f7a90" stroke-width="2" marker-end="url(#arw)"/>
-        <line x1="670" y1="78" x2="612" y2="78" stroke="#45d483" stroke-width="2" marker-end="url(#arw)"/>
-        <text x="641" y="102" class="lbl grn">download</text>
+        <line x1="632" y1="63" x2="722" y2="63" stroke="#5f7a90" stroke-width="2" marker-end="url(#arw)"/>
+        <line x1="722" y1="79" x2="634" y2="79" stroke="#45d483" stroke-width="2" marker-end="url(#arwG)"/>
+        <text x="677" y="103" class="lbl grn">download</text>
+        <!-- websharr -> tmdb (title lookup) -->
+        <line x1="576" y1="110" x2="632" y2="208" stroke="#5f7a90" stroke-width="1.8" stroke-dasharray="5 4" marker-end="url(#arw)"/>
+        <text x="628" y="174" class="lbl" text-anchor="start">title lookup</text>
         <!-- websharr -> arr (completed handoff) -->
-        <path d="M470,106 C470,150 360,150 340,190" fill="none" stroke="#45d483" stroke-width="2" marker-end="url(#arw)"/>
-        <text x="452" y="150" class="lbl grn">completed</text>
+        <path d="M462,108 C452,148 392,150 326,99" fill="none" stroke="#45d483" stroke-width="2" marker-end="url(#arwG)"/>
+        <text x="408" y="150" class="lbl grn">completed</text>
         <!-- arr -> jellyfin (import) -->
-        <line x1="289" y1="94" x2="289" y2="210" stroke="#5f7a90" stroke-width="2" marker-end="url(#arw)"/>
-        <text x="299" y="156" class="lbl" text-anchor="start">import + rename</text>
+        <line x1="248" y1="96" x2="248" y2="210" stroke="#5f7a90" stroke-width="2" marker-end="url(#arw)"/>
+        <text x="238" y="158" class="lbl" text-anchor="end">import + rename</text>
       </svg>
       <p class="shint" style="margin-top:14px">
         You request something in Jellyseerr → Sonarr/Radarr search through Websharr's
-        <b>Newznab indexer</b> → on grab, Websharr's <b>SABnzbd download client</b> pulls the
-        file from your Webshare premium account → Sonarr/Radarr import and rename it into the
-        library → Jellyfin plays it. Websharr is the same container playing both roles.
+        <b>Newznab indexer</b> (directly or via Prowlarr) → on grab, Websharr's <b>SABnzbd
+        download client</b> pulls the file from your Webshare premium account → Sonarr/Radarr
+        import and rename it into the library → Jellyfin plays it. For Czech content Websharr
+        looks the original title up in <b>TMDB</b> so it can match the *arr request to the
+        Czech-named Webshare file. Websharr is the same container playing every role.
       </p>
     </div>
 
@@ -410,6 +419,24 @@
         <tr><td>API Key</td><td>copy from <b>Settings</b></td></tr>
         <tr><td>Category</td><td><code>tv</code> (Sonarr) · <code>movies</code> (Radarr)</td></tr>
       </table>
+    </div>
+
+    <div class="hcard">
+      <h3>Czech titles &nbsp;<span class="badge">TMDB</span></h3>
+      <p class="shint">Sonarr/Radarr search by the title they know — usually English — but
+        Webshare files are named in Czech, so those searches find nothing. Add a
+        <b>TMDB Read Access Token</b> in <b>Settings</b> and Websharr looks each request up
+        in TMDB and searches Webshare under its <b>original (Czech) title</b>, while keeping
+        the canonical name for the release — so it grabs <code>Bez vědomí</code> but reports
+        <code>The Sleepers</code>.</p>
+      <ul class="hlist">
+        <li>ID lookups (TVDB/IMDb/TMDB) are tried first, then a name match. Behind
+          <b>Prowlarr</b> only the name match applies — Prowlarr forwards IDs as plain text.</li>
+        <li><b>Search aliases</b> (Settings) are a manual override — map a title to the exact
+          Webshare name when TMDB has no Czech title or picks the wrong match.</li>
+        <li>The token is optional: without it, aliases still work and everything else runs
+          normally.</li>
+      </ul>
     </div>
 
     <div class="hcard">

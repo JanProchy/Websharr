@@ -7,7 +7,9 @@ A bridge between **Webshare.cz** (premium account) and the ***arr stack** (Sonar
 - a **Newznab indexer** (`/torznab/api`) — translates Sonarr/Radarr queries into Webshare searches and returns the results as a release feed,
 - a **SABnzbd download client** (`/sabnzbd/api`) — accepts a grab, downloads the file through your premium account into a folder, and lets *arr import it as usual.
 
-Flow: request in Jellyseerr → Sonarr/Radarr searches via Websharr → grab → Websharr downloads from Webshare → *arr imports and renames into your library.
+<p align="center">
+  <img src="assets/flow.svg" alt="Request in Jellyseerr → Sonarr/Radarr search Websharr's Newznab indexer (direct or via Prowlarr) → grab → Websharr's SABnzbd client downloads from Webshare → *arr imports into the library → Jellyfin. Websharr looks Czech titles up in TMDB." width="820">
+</p>
 
 ## Getting started
 
@@ -89,12 +91,35 @@ Sonarr/Radarr; the SABnzbd download client is still added directly in each *arr.
   Czech (or use a dedicated profile) if you grab CZ content.
 - Watch the **Log** tab to see the *arr requests arrive in real time.
 
+## Czech titles (TMDB)
+
+Sonarr/Radarr search by the title they know — usually the English one — but
+Webshare files are almost always named in Czech (`bez.vedomi…`, not
+`the.sleepers…`), so those searches find nothing. Websharr bridges that gap by
+looking the request up in **TMDB**:
+
+- Paste a **TMDB API Read Access Token** (v4 auth, from your themoviedb.org
+  account) into **Settings → Czech titles (TMDB)**, or pre-fill it with the
+  `TMDB_TOKEN` environment variable (the UI value wins).
+- For each query Websharr finds the title in TMDB and searches Webshare under its
+  **original title** (`original_name` / `original_title`) — that's where the
+  Czech name lives — while keeping the canonical title for the release name so
+  *arr shows and imports it correctly (e.g. it grabs `Bez vědomí` but reports
+  `The Sleepers`). ID-based lookups are tried first, then a name match.
+- **Search aliases** (Settings) are a manual override: map a title to the exact
+  Webshare name yourself for the cases where TMDB has no Czech title or picks the
+  wrong match.
+
+The token is optional — without it, aliases still work and everything else runs
+as normal; you just lose the automatic Czech-title resolution.
+
 ## Configuration (environment variables)
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `WEBSHARE_USERNAME` / `WEBSHARE_PASSWORD` | — | Webshare.cz credentials (initial default; editable in the UI) |
 | `WEBSHARR_API_KEY` | auto-generated | API key for the Newznab/SABnzbd endpoints; set to pin a fixed value |
+| `TMDB_TOKEN` | — | TMDB API Read Access Token for [Czech-title](#czech-titles-tmdb) lookups (UI value wins) |
 | `SETTINGS_FILE` | `/config/settings.json` | persisted settings (UI account, Webshare login, API key) |
 | `COMPLETE_DIR` | `/downloads/complete` | finished downloads (`<cat>/<name>/file`) |
 | `INCOMPLETE_DIR` | `/downloads/incomplete` | in-progress files |
@@ -120,8 +145,10 @@ through — use Interactive Search / the UI when it does.
 ## Limitations
 
 - Webshare searches **by file names only** — no metadata; result quality depends
-  on how files are named. Searching by IMDb/TVDB ID isn't possible (caps doesn't
-  advertise it, so *arr sends text queries).
+  on how files are named. When *arr sends a TVDB/IMDb/TMDB ID directly, Websharr
+  resolves it through TMDB (see [Czech titles](#czech-titles-tmdb)); note that
+  Prowlarr converts IDs to a text query before forwarding, so behind Prowlarr the
+  ID is unavailable and the TMDB name match is used instead.
 - Interrupted downloads (restart, network outage, or **pause**) resume where they
   left off via an HTTP Range request; a failed job can be restarted via SABnzbd
   `mode=retry` (Retry in the UI History).

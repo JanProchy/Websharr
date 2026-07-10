@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 320" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="a" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#5f7a90"/></marker>
+    <marker id="ab" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#4db6f5"/></marker>
+    <marker id="ag" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#45d483"/></marker>
+  </defs>
+  <rect width="900" height="320" rx="14" fill="#0e2638"/>
+
+  <!-- nodes -->
+  <g><rect x="24" y="44" width="128" height="54" rx="10" fill="#071320" stroke="#1c3a52" stroke-width="1.5"/>
+    <text x="88" y="76" fill="#f2f7fb" font-size="15" font-weight="800" text-anchor="middle">Jellyseerr</text></g>
+
+  <g><rect x="200" y="44" width="152" height="54" rx="10" fill="#071320" stroke="#1c3a52" stroke-width="1.5"/>
+    <text x="276" y="68" fill="#f2f7fb" font-size="15" font-weight="800" text-anchor="middle">Sonarr / Radarr</text>
+    <text x="276" y="85" fill="#8ba7bd" font-size="10.5" font-weight="700" text-anchor="middle">(direct or via Prowlarr)</text></g>
+
+  <g><rect x="448" y="30" width="184" height="80" rx="10" fill="#071320" stroke="#4db6f5" stroke-width="2"/>
+    <text x="540" y="56" fill="#f2f7fb" font-size="16" font-weight="800" text-anchor="middle">Websharr</text>
+    <text x="540" y="74" fill="#8ba7bd" font-size="11.5" font-weight="700" text-anchor="middle">Newznab indexer</text>
+    <text x="540" y="90" fill="#8ba7bd" font-size="11.5" font-weight="700" text-anchor="middle">+ SABnzbd client</text></g>
+
+  <g><rect x="724" y="44" width="148" height="54" rx="10" fill="#071320" stroke="#1c3a52" stroke-width="1.5"/>
+    <text x="798" y="68" fill="#f2f7fb" font-size="15" font-weight="800" text-anchor="middle">Webshare.cz</text>
+    <text x="798" y="85" fill="#8ba7bd" font-size="11" font-weight="700" text-anchor="middle">premium</text></g>
+
+  <g><rect x="574" y="212" width="132" height="52" rx="10" fill="#071320" stroke="#1c3a52" stroke-width="1.5"/>
+    <text x="640" y="236" fill="#f2f7fb" font-size="15" font-weight="800" text-anchor="middle">TMDB</text>
+    <text x="640" y="253" fill="#8ba7bd" font-size="11" font-weight="700" text-anchor="middle">Czech titles</text></g>
+
+  <g><rect x="200" y="212" width="152" height="54" rx="10" fill="#071320" stroke="#1c3a52" stroke-width="1.5"/>
+    <text x="276" y="245" fill="#f2f7fb" font-size="15" font-weight="800" text-anchor="middle">Jellyfin</text></g>
+
+  <!-- arrows -->
+  <line x1="152" y1="71" x2="198" y2="71" stroke="#5f7a90" stroke-width="2" marker-end="url(#a)"/>
+  <text x="175" y="63" fill="#5f7a90" font-size="11" font-weight="700" text-anchor="middle">request</text>
+
+  <line x1="352" y1="71" x2="446" y2="71" stroke="#4db6f5" stroke-width="2" marker-end="url(#ab)"/>
+  <text x="399" y="63" fill="#4db6f5" font-size="11" font-weight="700" text-anchor="middle">search + grab</text>
+
+  <line x1="632" y1="64" x2="722" y2="64" stroke="#5f7a90" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="722" y1="80" x2="634" y2="80" stroke="#45d483" stroke-width="2" marker-end="url(#ag)"/>
+  <text x="677" y="104" fill="#45d483" font-size="11" font-weight="700" text-anchor="middle">download</text>
+
+  <!-- websharr -> tmdb (title lookup, dashed helper) -->
+  <line x1="576" y1="112" x2="632" y2="208" stroke="#5f7a90" stroke-width="1.8" stroke-dasharray="5 4" marker-end="url(#a)"/>
+  <text x="628" y="176" fill="#5f7a90" font-size="11" font-weight="700" text-anchor="start">title lookup</text>
+
+  <!-- websharr -> sonarr (completed handoff) -->
+  <path d="M462,110 C452,150 392,152 326,101" fill="none" stroke="#45d483" stroke-width="2" marker-end="url(#ag)"/>
+  <text x="408" y="152" fill="#45d483" font-size="11" font-weight="700" text-anchor="middle">completed</text>
+
+  <!-- sonarr -> jellyfin (import) -->
+  <line x1="248" y1="98" x2="248" y2="210" stroke="#5f7a90" stroke-width="2" marker-end="url(#a)"/>
+  <text x="238" y="160" fill="#5f7a90" font-size="11" font-weight="700" text-anchor="end">import + rename</text>
+</svg>
