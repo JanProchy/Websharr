@@ -80,16 +80,18 @@ class WebshareError(Exception):
 
 
 class SearchResult:
-    __slots__ = ("ident", "name", "size", "positive_votes", "negative_votes", "password")
+    __slots__ = ("ident", "name", "size", "positive_votes", "negative_votes", "password", "type")
 
     def __init__(self, ident: str, name: str, size: int,
-                 positive_votes: int = 0, negative_votes: int = 0, password: bool = False):
+                 positive_votes: int = 0, negative_votes: int = 0, password: bool = False,
+                 type: str = ""):
         self.ident = ident
         self.name = name
         self.size = size
         self.positive_votes = positive_votes
         self.negative_votes = negative_votes
         self.password = password
+        self.type = type  # container reported by Webshare, e.g. "mkv"
 
 
 def _parse_response(text: str) -> ET.Element:
@@ -218,6 +220,7 @@ class WebshareClient:
                         positive_votes=int(_text(f, "positive_votes", "0")),
                         negative_votes=int(_text(f, "negative_votes", "0")),
                         password=_text(f, "password", "0") == "1",
+                        type=_text(f, "type", ""),
                     )
                 )
             except ValueError:
@@ -230,6 +233,24 @@ class WebshareClient:
         if not link:
             raise WebshareError("Webshare returned no download link")
         return link
+
+    async def file_info(self, ident: str) -> dict:
+        """Per-file metadata: duration (s), resolution, codec. One API call."""
+        root = await self._authed_post("/file_info/", {"ident": ident})
+
+        def _int(tag: str) -> int:
+            try:
+                return int(_text(root, tag, "0") or 0)
+            except ValueError:
+                return 0
+
+        return {
+            "length": _int("length"),  # seconds
+            "width": _int("width"),
+            "height": _int("height"),
+            "format": _text(root, "format", ""),  # video codec, e.g. H264
+            "type": _text(root, "type", ""),       # container, e.g. mkv
+        }
 
     async def check_credentials(self) -> bool:
         try:

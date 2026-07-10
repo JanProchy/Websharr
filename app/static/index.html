@@ -146,6 +146,27 @@
   .rsize { color: var(--muted); font-size: 13.5px; font-weight: 600; width: 74px; text-align: right; flex-shrink: 0; }
   .rgrab { width: 96px; display: flex; justify-content: flex-end; flex-shrink: 0; }
   .grabbed { color: var(--green); font-size: 13px; font-weight: 800; }
+  .rmeta { color: var(--muted); font-size: 12.5px; font-weight: 600; text-align: right; flex-shrink: 0; }
+  .rformat { width: 52px; text-transform: uppercase; letter-spacing: .4px; }
+  .rres { width: 62px; }
+  .rdur { width: 60px; }
+  .rmeta.dim { color: var(--faint); }
+
+  /* log console */
+  .logtail { color: var(--muted); font-size: 12.5px; font-weight: 700; display: flex;
+    align-items: center; gap: 6px; cursor: pointer; }
+  #log-console { background: #06121e; border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 12px; height: calc(100vh - 210px); min-height: 320px; overflow-y: auto;
+    font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.6; }
+  .logline { display: flex; gap: 10px; white-space: pre-wrap; word-break: break-word; }
+  .logline .lt { color: var(--faint); flex-shrink: 0; }
+  .logline .lv { flex-shrink: 0; width: 62px; font-weight: 700; }
+  .logline .lg { color: var(--faint); flex-shrink: 0; }
+  .logline .lm { color: #c7d8e5; }
+  .lv.INFO { color: var(--accent); }
+  .lv.WARNING { color: #f5c451; }
+  .lv.ERROR, .lv.CRITICAL { color: var(--red); }
+  .lv.DEBUG { color: var(--faint); }
 
   /* settings — two columns: info left, form right; centered column */
   #view-settings { max-width: 828px; margin: 0 auto; }
@@ -185,6 +206,7 @@
     <button id="tab-queue" onclick="App.show('queue')">Queue <span class="count" id="queue-count">0</span></button>
     <button id="tab-history" onclick="App.show('history')">History</button>
     <button id="tab-search" onclick="App.show('search')">Search</button>
+    <button id="tab-log" onclick="App.show('log')">Log</button>
     <button id="tab-settings" onclick="App.show('settings')">Settings</button>
   </nav>
   <div class="spacer"></div>
@@ -233,6 +255,15 @@
     </form>
     <div id="search-status">Searching Webshare…</div>
     <div id="search-results"></div>
+  </section>
+
+  <section class="view" id="view-log">
+    <div class="viewhead"><h2>Log</h2>
+      <span class="sub">Live backend activity — including Sonarr/Radarr requests. Newest at the bottom.</span>
+      <div class="spacer"></div>
+      <label class="logtail"><input type="checkbox" id="log-follow" checked> Follow</label>
+    </div>
+    <div id="log-console"></div>
   </section>
 
   <section class="view" id="view-settings">
@@ -336,6 +367,15 @@ function relTime(ts) {
   if (d < 86400) return Math.round(d / 3600) + " h ago";
   return Math.round(d / 86400) + " d ago";
 }
+function fmtDur(sec) {
+  if (!sec) return "—";
+  const h = sec / 3600 | 0, m = (sec % 3600) / 60 | 0, s = sec % 60;
+  return h ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
+           : `${m}:${String(s).padStart(2, "0")}`;
+}
+function clockTime(ts) {
+  return new Date(ts * 1000).toLocaleTimeString([], { hour12: false });
+}
 
 async function ui(path, params = {}) {
   const qs = new URLSearchParams({ apikey: API_KEY, ...params });
@@ -366,15 +406,45 @@ const App = {
   offline: false,
   grabbed: new Set(),
   lastSearch: null,
+  logSeq: 0,
+  logTimer: null,
 
   show(tab) {
     this.tab = tab;
-    for (const t of ["queue", "history", "search", "settings"]) {
+    for (const t of ["queue", "history", "search", "log", "settings"]) {
       $("tab-" + t).classList.toggle("active", t === tab);
       $("view-" + t).classList.toggle("active", t === tab);
     }
     if (tab === "settings") this.loadSettings();
+    if (tab === "log") this.startLog(); else this.stopLog();
     this.refresh(true);
+  },
+
+  startLog() {
+    if (this.logTimer) return;
+    this.pollLog();
+    this.logTimer = setInterval(() => this.pollLog(), 2000);
+  },
+  stopLog() {
+    if (this.logTimer) { clearInterval(this.logTimer); this.logTimer = null; }
+  },
+  async pollLog() {
+    try {
+      const data = await ui("log", { after: this.logSeq });
+      if (!data.records.length) return;
+      const box = $("log-console");
+      const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+      const html = data.records.map((r) => {
+        this.logSeq = Math.max(this.logSeq, r.seq);
+        const lg = r.logger.replace(/^websharr\.?/, "") || "app";
+        return `<div class="logline"><span class="lt">${clockTime(r.ts)}</span>` +
+          `<span class="lv ${esc(r.level)}">${esc(r.level)}</span>` +
+          `<span class="lg">${esc(lg)}</span><span class="lm">${esc(r.message)}</span></div>`;
+      }).join("");
+      box.insertAdjacentHTML("beforeend", html);
+      while (box.children.length > 1000) box.removeChild(box.firstChild);
+      if ($("log-follow").checked && atBottom) box.scrollTop = box.scrollHeight;
+    } catch (e) { /* offline banner covers it */ }
   },
 
   async logout() {
@@ -596,18 +666,41 @@ const App = {
       <div class="table" style="margin-top:14px">
         <div class="thead">
           <span style="flex:1">Title — ${results.length} results</span>
+          <span class="rmeta rformat">Type</span>
+          <span class="rmeta rres">Res</span>
+          <span class="rmeta rdur">Length</span>
           <span style="width:74px;text-align:right">Size</span>
           <span style="width:96px"></span>
         </div>
         ${results.map((r, i) => `
-        <div class="rrow">
+        <div class="rrow" data-ident="${esc(r.ident)}">
           <span class="rtitle" title="${esc(r.name)}">${esc(r.title)}</span>
+          <span class="rmeta rformat">${esc(r.format || "—")}</span>
+          <span class="rmeta rres dim" data-res>…</span>
+          <span class="rmeta rdur dim" data-dur>…</span>
           <span class="rsize">${fmtSize(r.size)}</span>
           <div class="rgrab"><button class="accentbtn" data-i="${i}">Grab</button></div>
         </div>`).join("")}
       </div>`;
     for (const btn of $("search-results").querySelectorAll("[data-i]")) {
       btn.onclick = () => this.grab(results[+btn.dataset.i], btn);
+    }
+    this.loadFileInfo(results.map((r) => r.ident));
+  },
+
+  async loadFileInfo(idents) {
+    if (!idents.length) return;
+    let info;
+    try {
+      info = (await ui("fileinfo", { idents: idents.join(",") })).info;
+    } catch (e) { return; }
+    for (const row of $("search-results").querySelectorAll(".rrow")) {
+      const d = info[row.dataset.ident];
+      const resEl = row.querySelector("[data-res]"), durEl = row.querySelector("[data-dur]");
+      if (d && d.height) { resEl.textContent = d.height + "p"; resEl.classList.remove("dim"); }
+      else { resEl.textContent = "—"; }
+      if (d && d.length) { durEl.textContent = fmtDur(d.length); durEl.classList.remove("dim"); }
+      else { durEl.textContent = "—"; }
     }
   },
 
@@ -617,8 +710,9 @@ const App = {
     const cat = this.lastSearch.t === "movie" ? "movies"
       : this.lastSearch.t === "tvsearch" ? "tv" : "*";
     try {
-      // Exactly what Sonarr does: push the fake-NZB URL to the SABnzbd API.
-      const body = await sab({ mode: "addurl", name: r.nzb_url, cat }, true);
+      // Exactly what Sonarr does: push the fake-NZB URL to the SABnzbd API,
+      // with the parseable release name as nzbname so the folder carries SxxEyy.
+      const body = await sab({ mode: "addurl", name: r.nzb_url, nzbname: r.release, cat }, true);
       if (!body.status) throw new Error(body.error || "addurl failed");
       btn.outerHTML = `<span class="grabbed">✓ In queue</span>`;
       this.refresh(true);

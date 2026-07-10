@@ -25,6 +25,7 @@ class FakeWebshareClient:
         self.password = password
         self.password_digest = password_digest
         self.results: list[SearchResult] = []
+        self.file_infos: dict[str, dict] = {}
         self.fuzzy = False  # True = return everything, like Webshare fulltext
         self.file_link_url = "http://127.0.0.1:1/file.mkv"  # unreachable by default
 
@@ -54,6 +55,11 @@ class FakeWebshareClient:
 
     async def file_link(self, ident: str) -> str:
         return self.file_link_url
+
+    async def file_info(self, ident: str) -> dict:
+        return self.file_infos.get(ident, {
+            "length": 3600, "width": 1920, "height": 1080, "format": "H264", "type": "mkv",
+        })
 
     async def close(self):
         pass

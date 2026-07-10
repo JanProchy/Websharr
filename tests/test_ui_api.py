@@ -53,13 +53,17 @@ def test_ui_search_returns_json(client, fake_webshare):
     ]
     body = _ui(client, "search", q="Zaklinac", t="tvsearch", season="1", ep="5").json()
 
-    assert body["queries"] == ["Zaklinac S01E05", "Zaklinac 1x05"]
+    assert body["queries"] == ["Zaklinac S01E05", "Zaklinac 1x05", "Zaklinac 05"]
     results = body["results"]
     # txt and password-protected filtered out; sorted by size desc
     assert [r["ident"] for r in results] == ["id2", "id1"]
     assert results[0]["title"] == "Zaklinac.S01E05.2160p.CZ"
+    # release name (nzbname) carries the requested SxxEyy for parseable import
+    assert results[0]["release"] == "Zaklinac S01E05 - Zaklinac.S01E05.2160p.CZ"
+    assert results[0]["format"] == "mkv"
     assert results[0]["size"] == 12_000_000_000
     assert "/torznab/nzb/id2" in results[0]["nzb_url"]
+    assert "nzbname=Zaklinac" in results[0]["nzb_url"]
     assert "apikey=testkey" in results[0]["nzb_url"]
 
 
@@ -74,6 +78,51 @@ def test_ui_search_ranks_relevance_above_size(client, fake_webshare):
     ]
     body = _ui(client, "search", q="zaklinac s01e03", t="search").json()
     assert [r["ident"] for r in body["results"]] == ["right-big", "right-small", "wrong-ep"]
+
+
+def test_ui_fileinfo(client, fake_webshare):
+    fake_webshare.file_infos = {
+        "a": {"length": 3663, "width": 1920, "height": 1080, "format": "H264", "type": "mkv"},
+    }
+    body = _ui(client, "fileinfo", idents="a,b").json()
+    assert body["info"]["a"]["length"] == 3663
+    assert body["info"]["a"]["height"] == 1080
+    # 'b' falls back to the fake's default metadata (still present)
+    assert "b" in body["info"]
+    assert _ui(client, "fileinfo", idents="").json() == {"info": {}}
+
+
+def test_ui_log_records(client, fake_webshare):
+    import logging
+    logging.getLogger("websharr.test").info("hello-from-test-42")
+    recs = _ui(client, "log").json()["records"]
+    assert any(r["message"] == "hello-from-test-42" for r in recs)
+    # Incremental fetch returns only strictly-newer records, never repeats.
+    newest = max(r["seq"] for r in recs)
+    again = _ui(client, "log", after=newest).json()["records"]
+    assert all(r["seq"] > newest for r in again)
+    assert not any(r["message"] == "hello-from-test-42" for r in again)
+
+
+def test_ui_grab_sets_parseable_folder_title(client, fake_webshare):
+    """A UI grab with nzbname names the download folder with the SxxEyy title,
+    so *arr import can parse it even though the raw file has none."""
+    fake_webshare.results = [SearchResult("epX", "Skvrna 01 - Pohreb.mkv", 1000)]
+    r = _ui(client, "search", q="Skvrna", t="tvsearch", season="1", ep="1").json()["results"][0]
+    assert r["release"] == "Skvrna S01E01 - Skvrna 01 - Pohreb"
+
+    resp = client.post("/sabnzbd/api", params={
+        "mode": "addurl", "apikey": "testkey", "name": r["nzb_url"],
+        "nzbname": r["release"], "cat": "tv",
+    })
+    nzo_id = resp.json()["nzo_ids"][0]
+
+    from app.downloads import Job
+    from app.nzb import sanitize_filename
+    job: Job = client.app.state.downloads.get(nzo_id)
+    assert job.title == sanitize_filename(r["release"])
+    # job_name (folder + what Sonarr reads) carries the parseable SxxEyy.
+    assert job.job_name.startswith("Skvrna S01E01")
 
 
 def test_ui_search_empty_query(client):

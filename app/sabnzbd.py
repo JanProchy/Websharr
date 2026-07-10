@@ -212,7 +212,11 @@ async def sabnzbd_api(request: Request):
             return _err("Could not extract Webshare ident from NZB")
         ident, name, size = extracted
         category = params.get("cat", "*")
-        job = manager.add(ident=ident, name=name, size=size, category=category)
+        # Sonarr/Radarr (and the Websharr UI) send the release name as nzbname;
+        # use it as the job title so the download folder carries SxxExx and the
+        # *arr importer can parse the episode even from oddly-named files.
+        title = (params.get("nzbname") or "").strip()
+        job = manager.add(ident=ident, name=name, size=size, category=category, title=title)
         return JSONResponse({"status": True, "nzo_ids": [job.nzo_id]})
 
     logger.warning("Unhandled SABnzbd mode: %s", mode)

@@ -44,6 +44,10 @@ class Job:
     name: str  # sanitized file name incl. extension
     category: str
     size: int
+    # Release/display name (e.g. "Skvrna S01E01 - ...") used for the job folder
+    # and reported to Sonarr/Radarr, so import parses the episode even when the
+    # raw Webshare filename lacks SxxExx. Falls back to the filename stem.
+    title: str = ""
     status: str = "queued"  # queued | downloading | completed | failed
     downloaded: int = 0
     speed: float = 0.0  # bytes/s, not persisted meaningfully
@@ -54,8 +58,10 @@ class Job:
 
     @property
     def job_name(self) -> str:
-        stem = self.name.rsplit(".", 1)[0] if "." in self.name else self.name
-        return stem
+        """Name shown to *arr and used for the download folder."""
+        if self.title:
+            return self.title
+        return self.name.rsplit(".", 1)[0] if "." in self.name else self.name
 
 
 class DownloadManager:
@@ -106,13 +112,14 @@ class DownloadManager:
 
     # -- public API --------------------------------------------------------
 
-    def add(self, ident: str, name: str, size: int, category: str) -> Job:
+    def add(self, ident: str, name: str, size: int, category: str, title: str = "") -> Job:
         job = Job(
             nzo_id=f"SABnzbd_nzo_{uuid.uuid4().hex[:12]}",
             ident=ident,
             name=sanitize_filename(name),
             category=category or "*",
             size=size,
+            title=sanitize_filename(title) if title else "",
         )
         self._jobs[job.nzo_id] = job
         self._start(job)

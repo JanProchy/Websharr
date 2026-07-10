@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from . import __version__
+from . import applog
 from .config import config
 from .downloads import DownloadManager
 from .sabnzbd import router as sabnzbd_router
@@ -28,6 +29,7 @@ logger = logging.getLogger("websharr")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    applog.install()  # start capturing logs for the UI Log tab
     settings.load()
     settings.ensure_api_key()
     settings.apply()

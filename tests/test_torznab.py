@@ -1,6 +1,6 @@
 import xml.etree.ElementTree as ET
 
-from app.torznab import build_queries
+from app.torznab import build_queries, release_title
 from app.webshare import SearchResult
 
 TZNS = "{http://torznab.com/schemas/2015/feed}"
@@ -8,10 +8,24 @@ NZNS = "{http://www.newznab.com/DTD/2010/feeds/attributes/}"
 
 
 def test_build_queries():
-    assert build_queries("tvsearch", "Zaklinac", "1", "5") == ["Zaklinac S01E05", "Zaklinac 1x05"]
+    # Season 1 adds a bare-episode-number variant for CZ "Series 01" naming.
+    assert build_queries("tvsearch", "Zaklinac", "1", "5") == \
+        ["Zaklinac S01E05", "Zaklinac 1x05", "Zaklinac 05"]
+    # Later seasons omit the bare number (would collide across seasons).
+    assert build_queries("tvsearch", "Zaklinac", "2", "5") == ["Zaklinac S02E05", "Zaklinac 2x05"]
     assert build_queries("tvsearch", "Zaklinac", "2", None) == ["Zaklinac S02"]
     assert build_queries("movie", "Vlny 2024", None, None) == ["Vlny 2024"]
     assert build_queries("search", "  ", None, None) == []
+
+
+def test_release_title_normalizes_for_tvsearch():
+    # CZ filename without SxxEyy gets a parseable prefix, original kept for quality.
+    assert release_title("Skvrna", "1", "1", "Skvrna 01 - Pohreb (Cajda).mp4") == \
+        "Skvrna S01E01 - Skvrna 01 - Pohreb (Cajda)"
+    # Season-only search.
+    assert release_title("Skvrna", "2", None, "whatever.mkv") == "Skvrna S02 - whatever"
+    # Non-tv search leaves the name (stem) untouched.
+    assert release_title("Vlny 2024", None, None, "Vlny.2024.1080p.mkv") == "Vlny.2024.1080p"
 
 
 def test_caps(client):
@@ -45,13 +59,19 @@ def test_tvsearch_returns_items(client, fake_webshare):
     root = ET.fromstring(resp.content)
     items = root.findall("channel/item")
     titles = [i.findtext("title") for i in items]
-    assert titles == ["Zaklinac.S01E05.1080p.CZ", "Zaklinac 1x05 dabing"]
+    # Titles are normalized with the requested SxxEyy so *arr can parse them.
+    assert titles == [
+        "Zaklinac S01E05 - Zaklinac.S01E05.1080p.CZ",
+        "Zaklinac S01E05 - Zaklinac 1x05 dabing",
+    ]
 
     item = items[0]
     assert item.findtext("size") == "4000000000"
     enclosure = item.find("enclosure")
     assert "/torznab/nzb/id1" in enclosure.get("url")
     assert "apikey=testkey" in enclosure.get("url")
+    # nzbname carries the normalized title so the download folder gets SxxEyy.
+    assert "nzbname=Zaklinac" in enclosure.get("url")
     cats = {a.get("name"): a.get("value") for a in item.findall(f"{TZNS}attr")}
     assert cats["category"] == "5000"
     # Newznab namespace attrs must be present too (indexer is added as Newznab).

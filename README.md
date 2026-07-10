@@ -29,10 +29,18 @@ In `docker-compose.yml`, adjust the `/downloads` volume so it points to the same
 ## Web UI
 
 A monitoring and testing interface runs at **`http://localhost:9797/ui`**
-(sign-in required, Sonarr-style) — live download queue with progress, history
-with retry, a manual search tab whose **Grab** button pushes a release through
-the same SABnzbd flow Sonarr would use, and a settings page for the Webshare
-account, the API key and your password.
+(sign-in required, Sonarr-style):
+
+- **Queue / History** — live progress, retry, clear.
+- **Search** — manual search whose **Grab** button pushes a release through the
+  same SABnzbd flow Sonarr uses; results show container, resolution and length.
+- **Log** — live backend activity, including the Sonarr/Radarr HTTP requests, so
+  you can watch the integration from the browser.
+- **Settings** — Webshare account, API key, password.
+
+For TV searches Websharr normalizes release names to `Series SxxEyy - …` so
+Sonarr can parse and import even the many CZ files that ship without `SxxEyy`
+in the filename. Some manual imports are still occasionally needed.
 
 ## Setup in Sonarr / Radarr
 

@@ -22,10 +22,11 @@ from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from . import __version__
+from .applog import records as log_records
 from .config import config
 from .downloads import DownloadManager, Job
 from .settings import SESSION_TTL, hash_password, settings, verify_password
-from .torznab import VIDEO_EXTENSIONS, build_queries
+from .torznab import VIDEO_EXTENSIONS, build_queries, release_title
 from .webshare import SearchResult, WebshareError
 
 logger = logging.getLogger("websharr.ui")
@@ -240,6 +241,17 @@ async def ui_asset(name: str):
     return FileResponse(ASSETS_DIR / name, media_type="image/svg+xml")
 
 
+@router.get("/ui/api/log")
+async def ui_log(request: Request):
+    if not _authorized(request):
+        return _unauthorized()
+    try:
+        after = int(request.query_params.get("after", "0") or 0)
+    except ValueError:
+        after = 0
+    return {"records": log_records(after=after)}
+
+
 @router.get("/ui/api/status")
 async def ui_status(request: Request):
     if not _authorized(request):
@@ -298,18 +310,21 @@ def _relevance(queries: list[str], name: str) -> float:
     return best
 
 
-def _result_json(request: Request, r: SearchResult) -> dict:
+def _result_json(request: Request, r: SearchResult, release: str) -> dict:
     base = str(request.base_url).rstrip("/")
     nzb_url = (
         f"{base}/torznab/nzb/{r.ident}"
         f"?apikey={config.api_key}"
         f"&name={urllib.parse.quote(r.name)}&size={r.size}"
+        f"&nzbname={urllib.parse.quote(release)}"
     )
-    title = r.name.rsplit(".", 1)[0] if "." in r.name else r.name
     return {
         "ident": r.ident,
         "name": r.name,
-        "title": title,
+        "title": r.name.rsplit(".", 1)[0] if "." in r.name else r.name,
+        # release name carrying SxxEyy (for tvsearch); sent as nzbname on grab.
+        "release": release,
+        "format": (r.type or (r.name.rsplit(".", 1)[-1] if "." in r.name else "")).lower(),
         "size": r.size,
         "positive_votes": r.positive_votes,
         "nzb_url": nzb_url,
@@ -350,7 +365,40 @@ async def ui_search(request: Request):
             merged.append(r)
 
     merged.sort(key=lambda r: (-_relevance(queries, r.name), -r.size))
+    season = params.get("season") if t == "tvsearch" else None
+    ep = params.get("ep") if t == "tvsearch" else None
     return {
-        "results": [_result_json(request, r) for r in merged[:limit]],
+        "results": [
+            _result_json(request, r, release_title(q, season, ep, r.name))
+            for r in merged[:limit]
+        ],
         "queries": queries,
     }
+
+
+@router.get("/ui/api/fileinfo")
+async def ui_fileinfo(request: Request):
+    """Per-file metadata (duration, resolution, codec) for the given idents.
+
+    Fetched lazily by the search UI so the results table renders immediately;
+    one Webshare call per ident, run concurrently and best-effort.
+    """
+    if not _authorized(request):
+        return _unauthorized()
+    idents = [i for i in (request.query_params.get("idents", "").split(",")) if i][:60]
+    if not idents:
+        return {"info": {}}
+
+    client = request.app.state.webshare
+    sem = asyncio.Semaphore(8)
+
+    async def one(ident: str):
+        async with sem:
+            try:
+                return ident, await client.file_info(ident)
+            except (WebshareError, httpx.HTTPError) as exc:
+                logger.debug("file_info %s failed: %s", ident, exc)
+                return ident, None
+
+    pairs = await asyncio.gather(*(one(i) for i in idents))
+    return {"info": {ident: data for ident, data in pairs if data}}

@@ -80,36 +80,75 @@ def build_queries(t: str, q: str, season: str | None, ep: str | None) -> list[st
                 e = int(ep)
             except ValueError:
                 return [f"{q} S{s:02d}"]
-            # Two common naming conventions on Webshare: S01E02 and 1x02.
-            return [f"{q} S{s:02d}E{e:02d}", f"{q} {s}x{e:02d}"]
+            # Several naming conventions live on Webshare: S01E02, 1x02, and —
+            # common for CZ uploads — a bare episode number ("Series 01 - Title").
+            variants = [f"{q} S{s:02d}E{e:02d}", f"{q} {s}x{e:02d}"]
+            if s == 1:
+                # Only for season 1, where a bare "01" is unambiguous enough;
+                # for later seasons it would collide with other episodes.
+                variants.append(f"{q} {e:02d}")
+            return variants
         return [f"{q} S{s:02d}"]
     return [q]
+
+
+def release_title(query: str, season: str | None, ep: str | None, name: str) -> str:
+    """Sonarr/Radarr-parseable release name.
+
+    Webshare filenames often lack SxxEyy (esp. CZ uploads like "Skvrna 01 -
+    Pohřeb"), which breaks *arr's import parser. For a tvsearch we prepend the
+    requested "<series> SxxEyy" so the folder/release name parses, then keep the
+    original stem for quality tokens and human recognition.
+    """
+    stem = name.rsplit(".", 1)[0] if "." in name else name
+    if season is None:
+        return stem
+    try:
+        s = int(season)
+    except (TypeError, ValueError):
+        return stem
+    q = (query or "").strip()
+    if ep is not None:
+        try:
+            prefix = f"{q} S{s:02d}E{int(ep):02d}"
+        except (TypeError, ValueError):
+            prefix = f"{q} S{s:02d}"
+    else:
+        prefix = f"{q} S{s:02d}"
+    return f"{prefix} - {stem}".strip()
 
 
 def _is_video(name: str) -> bool:
     return name.lower().endswith(VIDEO_EXTENSIONS)
 
 
-def _render_feed(request: Request, results: list[SearchResult], category: str) -> Response:
+def _render_feed(request: Request, results: list[SearchResult], category: str,
+                 *, query: str | None = None, season: str | None = None,
+                 ep: str | None = None) -> Response:
     ET.register_namespace("torznab", TORZNAB_NS)
     ET.register_namespace("newznab", NEWZNAB_NS)
     rss = ET.Element("rss", {"version": "2.0"})
     channel = ET.SubElement(rss, "channel")
     ET.SubElement(channel, "title").text = "Websharr"
-    ET.SubElement(channel, "description").text = "Webshare.cz Torznab bridge"
+    ET.SubElement(channel, "description").text = "Webshare.cz Newznab bridge"
 
     base = str(request.base_url).rstrip("/")
     now_rfc2822 = email.utils.formatdate(time.time())
 
     for r in results:
         item = ET.SubElement(channel, "item")
-        title = r.name.rsplit(".", 1)[0] if "." in r.name else r.name
+        title = release_title(query, season, ep, r.name) if query is not None else \
+            (r.name.rsplit(".", 1)[0] if "." in r.name else r.name)
         ET.SubElement(item, "title").text = title
         ET.SubElement(item, "guid", {"isPermaLink": "false"}).text = f"websharr-{r.ident}"
+        # The saved file keeps the raw filename; the folder/title (nzbname) carries
+        # the parseable SxxEyy so *arr import works. Pass the title as nzbname so a
+        # direct GET of this link (or SAB addurl) names the job correctly.
         link = (
             f"{base}/torznab/nzb/{r.ident}"
             f"?apikey={config.api_key}"
             f"&name={urllib.parse.quote(r.name)}&size={r.size}"
+            f"&nzbname={urllib.parse.quote(title)}"
         )
         ET.SubElement(item, "link").text = link
         # Webshare has no upload-date in search results; use "now" so *arr
@@ -181,8 +220,10 @@ async def torznab_api(request: Request):
             merged.append(r)
 
     merged.sort(key=lambda r: r.size, reverse=True)
-    logger.info("Torznab %s q=%r -> %d results", t, q, len(merged))
-    return _render_feed(request, merged[:limit], category)
+    logger.info("Newznab %s q=%r -> %d results", t, q, len(merged))
+    season = params.get("season") if t == "tvsearch" else None
+    return _render_feed(request, merged[:limit], category,
+                        query=q, season=season, ep=params.get("ep"))
 
 
 @router.get("/torznab/nzb/{ident}")
