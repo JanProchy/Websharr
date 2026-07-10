@@ -27,8 +27,8 @@ from .downloads import DownloadManager, Job
 from .settings import SESSION_TTL, hash_password, settings, verify_password
 from .torznab import (
     VIDEO_EXTENSIONS,
-    alias_titles,
     build_queries,
+    expand_titles,
     file_episode,
     matches_query,
     parse_query,
@@ -176,6 +176,7 @@ async def ui_settings_get(request: Request):
         "complete_dir": str(config.complete_dir),
         "incomplete_dir": str(config.incomplete_dir),
         "aliases": settings.aliases,
+        "tmdb_token_set": bool(settings.tmdb_token),
     }
 
 
@@ -233,6 +234,10 @@ async def ui_settings_post(request: Request):
 
     if body.get("regenerate_api_key"):
         settings.api_key = secrets.token_hex(16)
+
+    if "tmdb_token" in body:
+        # Empty string clears it; a value sets it.
+        settings.tmdb_token = (body.get("tmdb_token") or "").strip()
 
     settings.save()
     settings.apply()
@@ -374,7 +379,9 @@ async def ui_search(request: Request):
         return JSONResponse({"error": f"Unknown search type '{t}'"}, status_code=400)
 
     t, q, season, ep = parse_query(t, params.get("q", ""), params.get("season"), params.get("ep"))
-    titles = [q] + alias_titles(q, settings.aliases)
+    titles = await expand_titles(
+        t, q, params.get("cat"), tvdbid=params.get("tvdbid"),
+        imdbid=params.get("imdbid"), tmdbid=params.get("tmdbid"))
     queries = []
     for title in titles:
         for v in build_queries(t, title, season, ep):

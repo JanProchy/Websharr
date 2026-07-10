@@ -26,6 +26,7 @@ from fastapi import APIRouter, Request, Response
 from .config import config
 from .nzb import build_nzb
 from .settings import settings
+from .tmdb import czech_title, czech_title_by_id
 from .webshare import SearchResult, WebshareError
 
 logger = logging.getLogger("websharr.torznab")
@@ -57,10 +58,15 @@ def _caps() -> Response:
     caps = ET.Element("caps")
     ET.SubElement(caps, "server", {"title": "Websharr", "version": "1.0"})
     ET.SubElement(caps, "limits", {"max": "100", "default": str(config.search_limit)})
+    # Advertise id params so Sonarr/Radarr (via Prowlarr) send tvdbid/imdbid/
+    # tmdbid — Websharr resolves them to the exact Czech title via TMDB instead
+    # of relying on a fuzzy text match.
     searching = ET.SubElement(caps, "searching")
     ET.SubElement(searching, "search", {"available": "yes", "supportedParams": "q"})
-    ET.SubElement(searching, "tv-search", {"available": "yes", "supportedParams": "q,season,ep"})
-    ET.SubElement(searching, "movie-search", {"available": "yes", "supportedParams": "q"})
+    ET.SubElement(searching, "tv-search",
+                  {"available": "yes", "supportedParams": "q,season,ep,tvdbid,imdbid"})
+    ET.SubElement(searching, "movie-search",
+                  {"available": "yes", "supportedParams": "q,imdbid,tmdbid"})
     cats = ET.SubElement(caps, "categories")
     movies = ET.SubElement(cats, "category", {"id": CAT_MOVIES, "name": "Movies"})
     ET.SubElement(movies, "subcat", {"id": "2040", "name": "Movies/HD"})
@@ -220,6 +226,32 @@ def alias_titles(query: str, aliases: list[dict]) -> list[str]:
     return out
 
 
+def _tmdb_kind(t: str, cat: str | None) -> str:
+    if t == "movie":
+        return "movie"
+    if t == "tvsearch":
+        return "tv"
+    return "movie" if (cat or "").strip().startswith("2") else "tv"  # 2xxx = movies
+
+
+async def expand_titles(t: str, q: str, cat: str | None, *, tvdbid: str | None = None,
+                        imdbid: str | None = None, tmdbid: str | None = None) -> list[str]:
+    """Candidate search titles: the query, manual-alias titles, and — when a TMDB
+    token is set — the Czech title. An exact TMDB id (tmdb/imdb/tvdb, sent by
+    *arr when caps advertise it) is preferred; otherwise a fuzzy title lookup."""
+    titles = [q] + alias_titles(q, settings.aliases)
+    if settings.tmdb_token:
+        kind = _tmdb_kind(t, cat)
+        cz = None
+        if tmdbid or imdbid or tvdbid:
+            cz = await czech_title_by_id(settings.tmdb_token, kind, tmdbid, imdbid, tvdbid)
+        if not cz:
+            cz = await czech_title(settings.tmdb_token, kind, q)
+        if cz and normalize_text(cz) not in {normalize_text(x) for x in titles}:
+            titles.append(cz)
+    return titles
+
+
 def matches_query(query, name: str) -> bool:
     """True when the file name *starts with* the title words of the query (or of
     any of its alias titles, when a list is passed).
@@ -340,9 +372,11 @@ async def torznab_api(request: Request):
         return _error(203, f"Function '{t}' not available")
 
     t, q, season, ep = parse_query(t, params.get("q", ""), params.get("season"), params.get("ep"))
-    # A *arr query may match a Webshare/CZ title in the user's alias map; search
-    # both and accept files matching either title.
-    titles = [q] + alias_titles(q, settings.aliases)
+    # A *arr query may match a Webshare/CZ title (alias map or TMDB lookup);
+    # search all and accept files matching any of them.
+    titles = await expand_titles(
+        t, q, params.get("cat"), tvdbid=params.get("tvdbid"),
+        imdbid=params.get("imdbid"), tmdbid=params.get("tmdbid"))
     queries = []
     for title in titles:
         for v in build_queries(t, title, season, ep):

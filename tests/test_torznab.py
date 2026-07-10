@@ -77,6 +77,34 @@ def test_alias_titles_and_multi_title_matching():
     assert file_episode(titles, "Bez.vedomi.S01E01.2019.CZ.mkv") == 1
 
 
+def test_expand_titles_uses_tmdb(monkeypatch):
+    import asyncio
+
+    from app import torznab
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "tok")
+
+    async def by_id(token, kind, tmdbid=None, imdbid=None, tvdbid=None):
+        return "Bez vědomí" if tvdbid == "358583" else None
+
+    async def by_name(token, kind, q):
+        return "Bez vědomí" if "sleepers" in q.lower() else None
+
+    monkeypatch.setattr(torznab, "czech_title_by_id", by_id)
+    monkeypatch.setattr(torznab, "czech_title", by_name)
+
+    # exact id lookup wins
+    titles = asyncio.run(torznab.expand_titles("tvsearch", "Sleepers", "5000", tvdbid="358583"))
+    assert "Bez vědomí" in titles
+    # fuzzy name lookup when no id
+    assert "Bez vědomí" in asyncio.run(torznab.expand_titles("tvsearch", "Sleepers", "5000"))
+    # no token -> just the query
+    monkeypatch.setattr(settings, "tmdb_token", "")
+    assert asyncio.run(torznab.expand_titles("tvsearch", "Sleepers", "5000")) == ["Sleepers"]
+
+
 def test_file_episode():
     assert file_episode("Skvrna", "Skvrna 05 - Bestie (Cajda).mp4") == 5
     assert file_episode("Skvrna", "Skvrna 01 - Pohreb.mkv") == 1

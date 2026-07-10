@@ -468,12 +468,31 @@
 
     <div class="scard">
       <div class="sinfo">
+        <h3>Czech titles (TMDB)</h3>
+        <p class="shint">Sonarr/Radarr search by the title they know (usually English),
+          but many Webshare files use the Czech name. With a <b>TMDB API Read Access
+          Token</b>, Websharr looks up the Czech title automatically (by id when
+          Sonarr/Radarr send it, otherwise by name) and searches it too.</p>
+      </div>
+      <div class="sform">
+        <label>TMDB Read Access Token
+          <input id="set-tmdb-token" type="password" autocomplete="off"
+            placeholder="•••••••• (leave empty to keep current)"></label>
+        <div class="srow">
+          <div class="spacer"></div>
+          <button class="primary" id="set-tmdb-save">Save token</button>
+        </div>
+        <span class="sresult" id="set-tmdb-result"></span>
+      </div>
+    </div>
+
+    <div class="scard">
+      <div class="sinfo">
         <h3>Search aliases</h3>
-        <p class="shint">Sonarr/Radarr search by the title they know (often English);
-          many files on Webshare use the Czech name. Map <b>*arr title → Webshare
-          (Czech) title</b> and Websharr also searches the Czech name — you fill these
-          in yourself (e.g. from the Webshare listing). Matching is loose, so the
-          series/movie name is enough.</p>
+        <p class="shint">Manual override/supplement to the TMDB lookup. Map
+          <b>*arr title → Webshare (Czech) title</b> and Websharr also searches the
+          Czech name. Use this when TMDB has no Czech title or picks the wrong match.
+          Matching is loose — the series/movie name is enough.</p>
       </div>
       <div class="sform">
         <div id="alias-rows"></div>
@@ -655,6 +674,9 @@ const App = {
       $("set-ui-user").value = s.ui_username;
       $("set-dir-complete").value = s.complete_dir;
       $("set-dir-incomplete").value = s.incomplete_dir;
+      $("set-tmdb-token").value = "";
+      $("set-tmdb-token").placeholder = s.tmdb_token_set
+        ? "•••••••• (set — leave empty to keep)" : "TMDB Read Access Token";
       this.renderAliases(s.aliases || []);
     } catch (e) { /* offline banner already covers this */ }
   },
@@ -1124,6 +1146,17 @@ $("set-pass-save").onclick = async () => {
     sresult("set-pass-result", true, "✓ Password changed");
     $("set-cur-pass").value = ""; $("set-new-pass").value = "";
   } catch (e) { sresult("set-pass-result", false, e.message); }
+};
+
+$("set-tmdb-save").onclick = async () => {
+  const val = $("set-tmdb-token").value.trim();
+  if (!val) { sresult("set-tmdb-result", false, "Enter a token first"); return; }
+  try {
+    await uiPost("settings", { tmdb_token: val });
+    sresult("set-tmdb-result", true, "✓ Saved");
+    $("set-tmdb-token").value = "";
+    App.loadSettings();
+  } catch (e) { sresult("set-tmdb-result", false, e.message); }
 };
 
 $("alias-add").onclick = () => {

@@ -53,6 +53,9 @@ class Settings:
         # Search aliases: [{"from": "<*arr title>", "to": "<Webshare/CZ title>"}]
         # so a Sonarr/Radarr query also searches the Czech name a file uses.
         self.aliases: list[dict] = []
+        # TMDB API Read Access Token (v4 bearer) — when set, a *arr query is also
+        # searched under its Czech title looked up from TMDB.
+        self.tmdb_token: str = ""
 
     @property
     def configured(self) -> bool:
@@ -79,6 +82,7 @@ class Settings:
         self.secret = data.get("secret") or self.secret
         aliases = data.get("aliases", [])
         self.aliases = [a for a in aliases if a.get("from") and a.get("to")]
+        self.tmdb_token = data.get("tmdb_token", "")
 
     def save(self) -> None:
         path = config.settings_file
@@ -93,6 +97,7 @@ class Settings:
             "api_key": self.api_key,
             "secret": self.secret,
             "aliases": self.aliases,
+            "tmdb_token": self.tmdb_token,
         }
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         path.chmod(0o600)
