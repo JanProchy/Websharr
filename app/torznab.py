@@ -190,14 +190,27 @@ def _as_titles(query) -> list[str]:
     return [query] if isinstance(query, str) else list(query)
 
 
+_ARTICLES = ("the", "a", "an")
+
+
+def _title_key(text: str) -> str:
+    """Normalized title with a leading article dropped — Sonarr searches
+    'The Sleepers' as 'Sleepers', so aliases must match either form."""
+    toks = normalize_text(text).split()
+    if toks and toks[0] in _ARTICLES:
+        toks = toks[1:]
+    return " ".join(toks)
+
+
 def alias_titles(query: str, aliases: list[dict]) -> list[str]:
     """Extra Webshare/CZ titles for a query, from the user's alias map — an
-    alias applies when its `from` (a *arr title) appears in the query."""
-    nq = normalize_text(query)
+    alias applies when its `from` (a *arr title) appears in the query, ignoring
+    a leading article on either side."""
+    qk = _title_key(query)
     out = []
     for a in aliases or []:
-        frm, to = normalize_text(a.get("from", "")), (a.get("to") or "").strip()
-        if frm and to and frm in nq:
+        fk, to = _title_key(a.get("from", "")), (a.get("to") or "").strip()
+        if fk and to and fk in qk:
             out.append(to)
     return out
 

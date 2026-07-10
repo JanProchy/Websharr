@@ -66,6 +66,8 @@ def test_matches_query_requires_name_to_start_with_title():
 def test_alias_titles_and_multi_title_matching():
     aliases = [{"from": "The Sleepers", "to": "Bez vědomí"}]
     assert alias_titles("The Sleepers", aliases) == ["Bez vědomí"]
+    # Sonarr drops the leading article: "The Sleepers" is searched as "Sleepers".
+    assert alias_titles("Sleepers", aliases) == ["Bez vědomí"]
     assert alias_titles("Something Else", aliases) == []
     # A CZ file matches via the alias title even though the query is English.
     titles = ["The Sleepers"] + alias_titles("The Sleepers", aliases)
