@@ -87,24 +87,70 @@ def test_expand_titles_uses_tmdb(monkeypatch):
     monkeypatch.setattr(settings, "tmdb_token", "tok")
 
     async def by_id(token, kind, tmdbid=None, imdbid=None, tvdbid=None):
-        return ("The Sleepers", "Bez vědomí") if tvdbid == "358583" else None
+        return ("The Sleepers", "Bez vědomí", "cs") if tvdbid == "358583" else None
 
     async def by_name(token, kind, q):
-        return ("The Sleepers", "Bez vědomí") if "sleepers" in q.lower() else None
+        return ("The Sleepers", "Bez vědomí", "cs") if "sleepers" in q.lower() else None
 
     monkeypatch.setattr(torznab, "tmdb_lookup_by_id", by_id)
     monkeypatch.setattr(torznab, "tmdb_lookup", by_name)
 
-    # exact id lookup wins; the original title is added and display is canonical
-    titles, display = asyncio.run(
+    # exact id lookup wins; the original title is added, display is canonical,
+    # and the original language maps to the *arr language name.
+    titles, display, language = asyncio.run(
         torznab.expand_titles("tvsearch", "Sleepers", "5000", tvdbid="358583"))
-    assert "Bez vědomí" in titles and display == "The Sleepers"
+    assert "Bez vědomí" in titles and display == "The Sleepers" and language == "Czech"
     # fuzzy name lookup when no id
-    titles, display = asyncio.run(torznab.expand_titles("tvsearch", "Sleepers", "5000"))
-    assert "Bez vědomí" in titles and display == "The Sleepers"
-    # no token -> just the query
+    titles, display, language = asyncio.run(torznab.expand_titles("tvsearch", "Sleepers", "5000"))
+    assert "Bez vědomí" in titles and display == "The Sleepers" and language == "Czech"
+    # no token -> just the query, no language
     monkeypatch.setattr(settings, "tmdb_token", "")
-    assert asyncio.run(torznab.expand_titles("tvsearch", "Sleepers", "5000")) == (["Sleepers"], "Sleepers")
+    assert asyncio.run(torznab.expand_titles("tvsearch", "Sleepers", "5000")) == (["Sleepers"], "Sleepers", "")
+
+
+def test_dub_language_and_lang_name():
+    from app.torznab import dub_language, lang_name
+    assert dub_language("Bez.vedomi.S01E01.CZ.Dabing.1080p.mkv") == "Czech"
+    assert dub_language("Bez.vedomi.S01E01.dabing.mkv") == "Czech"  # bare dabing = Czech
+    assert dub_language("Film.2020.SK.dabing.mkv") == "Slovak"
+    assert dub_language("Film.2020.CZ.SK.dabing.mkv") == "Czech"    # CZ present -> Czech
+    assert dub_language("Movie.2020.1080p.CZ.titulky.mkv") == ""    # subtitles, not a dub
+    assert dub_language("Movie.2020.1080p.BluRay.x264.mkv") == ""
+    assert lang_name("en") == "English"
+    assert lang_name("cs") == "Czech"
+    assert lang_name("") == "" and lang_name("xx") == ""
+
+
+def test_feed_tags_language_original_and_dub(client, fake_webshare, monkeypatch):
+    """The feed tags each item with a newznab `language`: the title's original
+    language, overridden to Czech/Slovak for a dubbed file."""
+    from app import torznab
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "tok")
+
+    async def by_name(token, kind, q):
+        return ("The Sleepers", "", "en")  # pretend an English-original title
+
+    async def by_id(token, kind, tmdbid=None, imdbid=None, tvdbid=None):
+        return None
+
+    monkeypatch.setattr(torznab, "tmdb_lookup", by_name)
+    monkeypatch.setattr(torznab, "tmdb_lookup_by_id", by_id)
+    fake_webshare.results = [
+        SearchResult("o1", "Sleepers.S01E01.1080p.mkv", 2_000_000_000),
+        SearchResult("o2", "Sleepers.S01E01.CZ.Dabing.1080p.mkv", 2_100_000_000),
+    ]
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "q": "Sleepers", "season": "1", "ep": "1"})
+    root = ET.fromstring(resp.content)
+    by_ident = {}
+    for it in root.findall("channel/item"):
+        attrs = {a.get("name"): a.get("value") for a in it.findall(f"{NZNS}attr")}
+        by_ident[it.findtext("title")] = attrs.get("language")
+    langs = list(by_ident.values())
+    assert "English" in langs   # original-audio file tagged with the original language
+    assert "Czech" in langs     # dubbed file tagged with the dub language
 
 
 def test_release_title_asciified():

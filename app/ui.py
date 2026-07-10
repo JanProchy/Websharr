@@ -399,7 +399,7 @@ async def ui_search(request: Request):
         return JSONResponse({"error": f"Unknown search type '{t}'"}, status_code=400)
 
     t, q, season, ep = parse_query(t, params.get("q", ""), params.get("season"), params.get("ep"))
-    titles, display = await expand_titles(
+    titles, display, _language = await expand_titles(
         t, q, params.get("cat"), tvdbid=params.get("tvdbid"),
         imdbid=params.get("imdbid"), tmdbid=params.get("tmdbid"))
     queries = []

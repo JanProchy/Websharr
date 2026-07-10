@@ -8,8 +8,10 @@ an extra search term, and the canonical one as the release-name prefix so
 Sonarr shows "The Sleepers", not whatever alias happened to match.
 
 Returns are cached in-memory (including negatives) — the same query repeats a
-lot. Each result is a (display, original) tuple; `original` is "" when it
-equals the display title (i.e. not foreign).
+lot. Each result is a (display, original, language) tuple: `original` is "" when
+it equals the display title (i.e. not foreign); `language` is the title's TMDB
+`original_language` (ISO 639-1, e.g. "en"/"cs"), used to tag the release so
+Sonarr/Radarr can honour an "original language" policy.
 """
 
 import logging
@@ -19,7 +21,7 @@ import httpx
 logger = logging.getLogger("websharr.tmdb")
 
 _BASE = "https://api.themoviedb.org/3"
-_cache: dict[tuple[str, str], tuple[str, str] | None] = {}
+_cache: dict[tuple[str, str], tuple[str, str, str] | None] = {}
 
 
 def _headers(token: str) -> dict:
@@ -36,12 +38,20 @@ def _titles(entry: dict, kind: str) -> tuple[str, str]:
     return disp, (orig if orig and orig.casefold() != disp.casefold() else "")
 
 
-async def lookup(token: str, kind: str, query: str) -> tuple[str, str] | None:
-    """(display, original) for a TMDB `tv`/`movie` matched by name, or None.
+def _language(entry: dict) -> str:
+    return (entry.get("original_language") or "").strip().lower()
+
+
+async def lookup(token: str, kind: str, query: str) -> tuple[str, str, str] | None:
+    """(display, original, language) for a TMDB `tv`/`movie` matched by name.
 
     Fulltext — prefers the first result with a foreign original title (the one
-    we want); can still pick wrong for ambiguous names, so the id lookup is
-    preferred and the manual alias overrides.
+    we want) for the display/original names; can still pick wrong for ambiguous
+    names, so the id lookup is preferred and the manual alias overrides. The
+    language always comes from the best match (results[0]), so even a title with
+    no foreign original (e.g. an English show) still yields its language. When no
+    foreign original is found the display/original are empty (don't override the
+    query name) but the language is still returned. None only when nothing matched.
     """
     query = (query or "").strip()
     if not token or not query or kind not in ("tv", "movie"):
@@ -57,21 +67,27 @@ async def lookup(token: str, kind: str, query: str) -> tuple[str, str] | None:
     except (httpx.HTTPError, KeyError, ValueError) as exc:
         logger.warning("TMDB search %r (%s) failed: %s", query, kind, exc)
         return None
-    found = None
+    if not results:
+        _cache[key] = None
+        return None
+    lang = _language(results[0])
+    disp_out, orig_out = "", ""
     for entry in results[:5]:
         disp, orig = _titles(entry, kind)
         if orig:
-            found = (disp, orig)
+            disp_out, orig_out = disp, orig
+            lang = _language(entry) or lang
             break
+    found = (disp_out, orig_out, lang)
     _cache[key] = found
-    if found:
-        logger.info("TMDB: %s %r -> %r (original %r)", kind, query, found[0], found[1])
+    logger.info("TMDB: %s %r -> display=%r original=%r lang=%r",
+                kind, query, disp_out, orig_out, lang)
     return found
 
 
 async def lookup_by_id(token: str, kind: str, tmdbid=None, imdbid=None,
-                       tvdbid=None) -> tuple[str, str] | None:
-    """(display, original) from an exact external id (tmdb/imdb/tvdb)."""
+                       tvdbid=None) -> tuple[str, str, str] | None:
+    """(display, original, language) from an exact external id (tmdb/imdb/tvdb)."""
     if not token or kind not in ("tv", "movie"):
         return None
     ext = tmdbid or imdbid or tvdbid
@@ -97,8 +113,10 @@ async def lookup_by_id(token: str, kind: str, tmdbid=None, imdbid=None,
         logger.warning("TMDB id lookup %s=%s failed: %s", kind, ext, exc)
         return None
     disp, orig = _titles(entry, kind) if entry else ("", "")
-    found = (disp, orig) if (disp or orig) else None
+    lang = _language(entry) if entry else ""
+    found = (disp, orig, lang) if (disp or orig or lang) else None
     _cache[key] = found
     if found:
-        logger.info("TMDB: %s id=%s -> %r (original %r)", kind, ext, found[0], found[1])
+        logger.info("TMDB: %s id=%s -> display=%r original=%r lang=%r",
+                    kind, ext, disp, orig, lang)
     return found

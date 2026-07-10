@@ -44,6 +44,45 @@ VIDEO_EXTENSIONS = (
     ".mkv", ".mp4", ".avi", ".m4v", ".mov", ".wmv", ".ts", ".m2ts", ".webm", ".mpg", ".mpeg",
 )
 
+# TMDB original_language (ISO 639-1) -> the language name Sonarr/Radarr expect in
+# a newznab `language` attribute. Only the codes we can map are tagged; anything
+# unknown is left untagged so *arr falls back to parsing the release name.
+_LANG_NAMES = {
+    "en": "English", "cs": "Czech", "sk": "Slovak", "de": "German", "fr": "French",
+    "es": "Spanish", "it": "Italian", "pl": "Polish", "hu": "Hungarian", "nl": "Dutch",
+    "pt": "Portuguese", "ru": "Russian", "uk": "Ukrainian", "ja": "Japanese",
+    "ko": "Korean", "zh": "Chinese", "cn": "Chinese", "sv": "Swedish", "da": "Danish",
+    "no": "Norwegian", "nb": "Norwegian", "fi": "Finnish", "tr": "Turkish", "ro": "Romanian",
+    "el": "Greek", "ar": "Arabic", "he": "Hebrew", "hi": "Hindi", "th": "Thai",
+    "bg": "Bulgarian", "hr": "Croatian", "sr": "Serbian", "sl": "Slovenian", "ca": "Catalan",
+    "fa": "Persian", "vi": "Vietnamese", "id": "Indonesian", "lt": "Lithuanian",
+    "lv": "Latvian", "et": "Estonian", "is": "Icelandic",
+}
+
+
+def lang_name(code: str) -> str:
+    """*arr language name for a TMDB language code (""->"", unknown code -> "")."""
+    return _LANG_NAMES.get((code or "").strip().lower(), "")
+
+
+# Filename markers of a Czech/Slovak dub (audio replaced), as opposed to the
+# original audio with subtitles ("titulky"). Used to tag a dubbed release with
+# the dub language instead of the title's original language.
+_DUB_RE = re.compile(r"\bdab(?:ing|ovan\w*|\b)", re.IGNORECASE)
+_SK_RE = re.compile(r"\b(?:sk|slovensk\w*)\b", re.IGNORECASE)
+_CZ_RE = re.compile(r"\b(?:cz|cesk\w*|česk\w*|czech)\b", re.IGNORECASE)
+
+
+def dub_language(name: str) -> str:
+    """"Czech"/"Slovak" when the file name signals a CZ/SK dub, else ""."""
+    if not _DUB_RE.search(name or ""):
+        return ""
+    # A dub marked SK (and not CZ) is Slovak; otherwise assume Czech (the default
+    # on Webshare, where a bare "Dabing" is Czech).
+    if _SK_RE.search(name) and not _CZ_RE.search(name):
+        return "Slovak"
+    return "Czech"
+
 
 def _xml_response(element: ET.Element, status_code: int = 200) -> Response:
     body = ET.tostring(element, encoding="utf-8", xml_declaration=True)
@@ -247,16 +286,19 @@ def _tmdb_kind(t: str, cat: str | None) -> str:
 
 async def expand_titles(t: str, q: str, cat: str | None, *, tvdbid: str | None = None,
                         imdbid: str | None = None, tmdbid: str | None = None
-                        ) -> tuple[list[str], str]:
-    """Return (search_titles, display_title).
+                        ) -> tuple[list[str], str, str]:
+    """Return (search_titles, display_title, original_language).
 
     search_titles: the query, manual-alias titles, and the TMDB original title —
     all searched, and any matching file is accepted.
     display_title: the canonical name used as the release-name prefix, so Sonarr
     shows "The Sleepers" instead of whatever alias/query happened to match.
+    original_language: the title's language name (from TMDB) used to tag the
+    release feed, or "" when unknown; lets *arr apply an original-language policy.
     """
     titles = [q] + alias_titles(q, settings.aliases)
     display = q
+    language = ""
     if settings.tmdb_token:
         kind = _tmdb_kind(t, cat)
         res = None
@@ -265,12 +307,13 @@ async def expand_titles(t: str, q: str, cat: str | None, *, tvdbid: str | None =
         if not res:
             res = await tmdb_lookup(settings.tmdb_token, kind, q)
         if res:
-            disp, orig = res
+            disp, orig, lang = res
             if disp:
                 display = disp  # prefix releases with the canonical title
             if orig and normalize_text(orig) not in {normalize_text(x) for x in titles}:
                 titles.append(orig)
-    return titles, display
+            language = lang_name(lang)
+    return titles, display, language
 
 
 def matches_query(query, name: str) -> bool:
@@ -328,7 +371,8 @@ def relevance(queries: list[str], name: str) -> float:
 
 def _render_feed(request: Request, results: list[SearchResult], category: str,
                  *, query: str | None = None, season: str | None = None,
-                 ep: str | None = None, heights: dict[str, int] | None = None) -> Response:
+                 ep: str | None = None, heights: dict[str, int] | None = None,
+                 language: str = "") -> Response:
     heights = heights or {}
     ET.register_namespace("torznab", TORZNAB_NS)
     ET.register_namespace("newznab", NEWZNAB_NS)
@@ -369,6 +413,10 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
             "length": str(r.size),
             "type": "application/x-nzb",
         })
+        # A CZ/SK dub overrides the title's original language (a dubbed release
+        # is in the dub language, not the original), so *arr's original-language
+        # policy grabs the original audio and skips the dub.
+        item_lang = dub_language(r.name) or language
         # Emit attrs in both namespaces so the feed parses whether Sonarr/Radarr
         # treats it as Newznab (usenet — the correct choice) or Torznab.
         for ns in (NEWZNAB_NS, TORZNAB_NS):
@@ -376,6 +424,9 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
             ET.SubElement(item, "{%s}attr" % ns, {"name": "size", "value": str(r.size)})
             ET.SubElement(item, "{%s}attr" % ns,
                           {"name": "grabs", "value": str(r.positive_votes)})
+            if item_lang:
+                ET.SubElement(item, "{%s}attr" % ns,
+                              {"name": "language", "value": item_lang})
 
     return _xml_response(rss)
 
@@ -396,7 +447,7 @@ async def torznab_api(request: Request):
     # A *arr query may match a Webshare/CZ title (alias map or TMDB lookup);
     # search all and accept files matching any of them. `display` is the nice
     # title used to prefix the release name.
-    titles, display = await expand_titles(
+    titles, display, language = await expand_titles(
         t, q, params.get("cat"), tvdbid=params.get("tvdbid"),
         imdbid=params.get("imdbid"), tmdbid=params.get("tmdbid"))
     queries = []
@@ -448,7 +499,8 @@ async def torznab_api(request: Request):
     shown = merged[:limit]
     heights = await _resolutions(client, shown)
     return _render_feed(request, shown, category, heights=heights,
-                        query=display, season=(season if t == "tvsearch" else None), ep=ep)
+                        query=display, season=(season if t == "tvsearch" else None), ep=ep,
+                        language=language)
 
 
 @router.get("/torznab/nzb/{ident}")
