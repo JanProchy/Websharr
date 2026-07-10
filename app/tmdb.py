@@ -1,10 +1,10 @@
-"""Best-effort Czech-title lookup from TMDB.
+"""Best-effort original-title lookup from TMDB.
 
-When a Sonarr/Radarr search arrives under the title *arr knows (usually
-English), we look the show/movie up on TMDB and return its Czech title, so the
-Webshare search can also try the name CZ files actually use. Results are cached
-in-memory (including negatives) to keep API calls down — the same query repeats
-a lot.
+Sonarr/Radarr search under the title they know (usually English), but many
+Webshare files use the show/movie's original (e.g. Czech) name. TMDB stores
+that in `original_name`/`original_title`, so we look it up and let the Webshare
+search try it too. Results are cached in-memory (including negatives) to keep
+API calls down — the same query repeats a lot.
 """
 
 import logging
@@ -14,24 +14,49 @@ import httpx
 logger = logging.getLogger("websharr.tmdb")
 
 _BASE = "https://api.themoviedb.org/3"
-_cache: dict[tuple[str, str], str] = {}  # (kind, query) -> czech title ("" = none)
+_cache: dict[tuple[str, str], str] = {}  # (kind, key) -> original title ("" = none)
 
 
-async def _czech_from_tmdb_id(client: httpx.AsyncClient, kind: str, tmdb_id) -> str:
-    tr = await client.get(f"{_BASE}/{kind}/{tmdb_id}/translations")
-    tr.raise_for_status()
-    for t in tr.json().get("translations", []):
-        if t.get("iso_639_1") == "cs":
-            data = t.get("data") or {}
-            name = (data.get("name") or data.get("title") or "").strip()
-            if name:
-                return name
-    return ""
+def _original(entry: dict, kind: str) -> str:
+    """The original title if it differs from the display title, else ""."""
+    if kind == "tv":
+        orig, disp = entry.get("original_name", ""), entry.get("name", "")
+    else:
+        orig, disp = entry.get("original_title", ""), entry.get("title", "")
+    orig = (orig or "").strip()
+    return orig if orig and orig.casefold() != (disp or "").strip().casefold() else ""
+
+
+async def czech_title(token: str, kind: str, query: str) -> str | None:
+    """Original title for a TMDB `tv`/`movie` matching `query` by name.
+
+    Fulltext — takes TMDB's top result, so it can pick the wrong entry for
+    ambiguous names; prefer the id-based lookup, and the manual alias overrides.
+    """
+    query = (query or "").strip()
+    if not token or not query or kind not in ("tv", "movie"):
+        return None
+    key = (kind, query.casefold())
+    if key in _cache:
+        return _cache[key] or None
+    try:
+        async with httpx.AsyncClient(timeout=10.0, headers=_headers(token)) as client:
+            resp = await client.get(f"{_BASE}/search/{kind}", params={"query": query})
+            resp.raise_for_status()
+            results = resp.json().get("results") or []
+            orig = _original(results[0], kind) if results else ""
+    except (httpx.HTTPError, KeyError, ValueError) as exc:
+        logger.warning("TMDB search %r (%s) failed: %s", query, kind, exc)
+        return None
+    _cache[key] = orig
+    if orig:
+        logger.info("TMDB: %s %r -> original title %r", kind, query, orig)
+    return orig or None
 
 
 async def czech_title_by_id(token: str, kind: str, tmdbid=None, imdbid=None,
                             tvdbid=None) -> str | None:
-    """Czech title from an exact external id (tmdb/imdb/tvdb) — no guessing.
+    """Original title from an exact external id (tmdb/imdb/tvdb) — no guessing.
 
     *arr sends these when the Newznab caps advertise id support.
     """
@@ -43,70 +68,28 @@ async def czech_title_by_id(token: str, kind: str, tmdbid=None, imdbid=None,
     key = (kind, f"id:{ext}")
     if key in _cache:
         return _cache[key] or None
-
-    headers = {"Authorization": f"Bearer {token}", "accept": "application/json"}
     try:
-        async with httpx.AsyncClient(timeout=10.0, headers=headers) as client:
-            tmdb_id = tmdbid
-            if not tmdb_id:  # resolve external id -> tmdb id
+        async with httpx.AsyncClient(timeout=10.0, headers=_headers(token)) as client:
+            if tmdbid:
+                r = await client.get(f"{_BASE}/{kind}/{tmdbid}")
+                r.raise_for_status()
+                entry = r.json()
+            else:
                 source = "imdb_id" if imdbid else "tvdb_id"
                 r = await client.get(f"{_BASE}/find/{ext}",
                                      params={"external_source": source})
                 r.raise_for_status()
                 hits = r.json().get(f"{kind}_results") or []
-                if not hits:
-                    _cache[key] = ""
-                    return None
-                tmdb_id = hits[0]["id"]
-            czech = await _czech_from_tmdb_id(client, kind, tmdb_id)
+                entry = hits[0] if hits else {}
+            orig = _original(entry, kind)
     except (httpx.HTTPError, KeyError, ValueError) as exc:
-        logger.warning("TMDB id lookup %s=%s (%s) failed: %s", kind, ext, kind, exc)
+        logger.warning("TMDB id lookup %s=%s failed: %s", kind, ext, exc)
         return None
+    _cache[key] = orig
+    if orig:
+        logger.info("TMDB: %s id=%s -> original title %r", kind, ext, orig)
+    return orig or None
 
-    _cache[key] = czech
-    if czech:
-        logger.info("TMDB: %s id=%s -> Czech title %r", kind, ext, czech)
-    return czech or None
 
-
-async def czech_title(token: str, kind: str, query: str) -> str | None:
-    """Czech title for a TMDB `tv`/`movie` matching `query`, or None.
-
-    Fulltext match — takes TMDB's top result, so it can be wrong for ambiguous
-    names; the manual alias map is the override for those.
-    """
-    query = (query or "").strip()
-    if not token or not query or kind not in ("tv", "movie"):
-        return None
-    key = (kind, query.lower())
-    if key in _cache:
-        return _cache[key] or None
-
-    headers = {"Authorization": f"Bearer {token}", "accept": "application/json"}
-    try:
-        async with httpx.AsyncClient(timeout=10.0, headers=headers) as client:
-            resp = await client.get(f"{_BASE}/search/{kind}", params={"query": query})
-            resp.raise_for_status()
-            results = resp.json().get("results") or []
-            if not results:
-                _cache[key] = ""
-                return None
-            tmdb_id = results[0]["id"]
-
-            tr = await client.get(f"{_BASE}/{kind}/{tmdb_id}/translations")
-            tr.raise_for_status()
-            czech = ""
-            for t in tr.json().get("translations", []):
-                if t.get("iso_639_1") == "cs":
-                    data = t.get("data") or {}
-                    czech = (data.get("name") or data.get("title") or "").strip()
-                    if czech:
-                        break
-    except (httpx.HTTPError, KeyError, ValueError) as exc:
-        logger.warning("TMDB lookup for %r (%s) failed: %s", query, kind, exc)
-        return None  # don't cache transient failures
-
-    _cache[key] = czech
-    if czech:
-        logger.info("TMDB: %s %r -> Czech title %r", kind, query, czech)
-    return czech or None
+def _headers(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}", "accept": "application/json"}
