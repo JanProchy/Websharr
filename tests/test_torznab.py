@@ -84,8 +84,9 @@ def test_search_filters_garbage_and_wrong_episode(client, fake_webshare):
     })
     root = ET.fromstring(resp.content)
     titles = [i.findtext("title") for i in root.findall("channel/item")]
-    # Garbage AND the wrong episode dropped; only the real S01E05 survives.
-    assert titles == ["Skvrna S01E05 - Skvrna 05 - Bestie"]
+    # Garbage AND the wrong episode dropped; only the real S01E05 survives
+    # (resolution appended from file_info, fake default 1080).
+    assert titles == ["Skvrna S01E05 - Skvrna 05 - Bestie 1080p"]
 
 
 def test_caps(client):
@@ -119,10 +120,11 @@ def test_tvsearch_returns_items(client, fake_webshare):
     root = ET.fromstring(resp.content)
     items = root.findall("channel/item")
     titles = [i.findtext("title") for i in items]
-    # Titles are normalized with the requested SxxEyy so *arr can parse them.
+    # Titles are normalized with the requested SxxEyy so *arr can parse them;
+    # the one without a resolution gets one appended from file_info (fake=1080).
     assert titles == [
         "Zaklinac S01E05 - Zaklinac.S01E05.1080p.CZ",
-        "Zaklinac S01E05 - Zaklinac 1x05 dabing",
+        "Zaklinac S01E05 - Zaklinac 1x05 dabing 1080p",
     ]
 
     item = items[0]
@@ -153,6 +155,29 @@ def test_empty_query_returns_placeholder_in_requested_category(client):
     # Title carries no SxxExx / year, so the *arr parser can never match it.
     title = items[0].findtext("title")
     assert "S0" not in title and "x0" not in title
+
+
+def test_search_labels_quality_from_fileinfo(client, fake_webshare):
+    """A CZ file with no resolution in its name gets one appended from
+    file_info's height, so *arr can detect the quality."""
+    fake_webshare.results = [SearchResult("q1", "Skvrna 05 - Bestie.mp4", 500_000_000)]
+    fake_webshare.file_infos = {"q1": {"length": 2600, "width": 1920, "height": 1080,
+                                       "format": "H264", "type": "mp4"}}
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "q": "Skvrna", "season": "1", "ep": "5",
+    })
+    title = ET.fromstring(resp.content).findtext("channel/item/title")
+    assert title == "Skvrna S01E05 - Skvrna 05 - Bestie 1080p"
+
+
+def test_search_keeps_existing_resolution(client, fake_webshare):
+    # Name already has a resolution -> no file_info lookup, left as-is.
+    fake_webshare.results = [SearchResult("q2", "Skvrna 05 - Bestie 720p.mkv", 500_000_000)]
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "q": "Skvrna", "season": "1", "ep": "5",
+    })
+    title = ET.fromstring(resp.content).findtext("channel/item/title")
+    assert title == "Skvrna S01E05 - Skvrna 05 - Bestie 720p"
 
 
 def test_nzb_download(client):

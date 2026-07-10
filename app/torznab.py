@@ -11,6 +11,7 @@ The feed emits attributes in both the newznab and torznab namespaces so it
 parses correctly either way.
 """
 
+import asyncio
 import email.utils
 import logging
 import re
@@ -144,6 +145,30 @@ def _is_video(name: str) -> bool:
     return name.lower().endswith(VIDEO_EXTENSIONS)
 
 
+_RES_RE = re.compile(r"\b(480|540|576|720|1080|2160|4320)p?\b", re.I)
+
+
+async def _resolutions(client, results: list[SearchResult]) -> dict[str, int]:
+    """Fetch video height (via file_info) for results whose name has no
+    resolution token, so we can label quality — many CZ files ship without
+    one and Sonarr/Radarr reject them as 'Unknown' quality otherwise."""
+    need = [r for r in results if not _RES_RE.search(r.name)]
+    if not need:
+        return {}
+    sem = asyncio.Semaphore(6)
+
+    async def one(r: SearchResult):
+        async with sem:
+            try:
+                info = await client.file_info(r.ident)
+                return r.ident, int(info.get("height") or 0)
+            except (WebshareError, httpx.HTTPError):
+                return r.ident, 0
+
+    pairs = await asyncio.gather(*(one(r) for r in need))
+    return {ident: h for ident, h in pairs if h}
+
+
 _EP_TOKEN = re.compile(r"^(s\d{1,2}e\d{1,3}|s\d{1,2}|\d{1,2}x\d{1,3}|\d{1,4})$")
 
 
@@ -209,7 +234,8 @@ def relevance(queries: list[str], name: str) -> float:
 
 def _render_feed(request: Request, results: list[SearchResult], category: str,
                  *, query: str | None = None, season: str | None = None,
-                 ep: str | None = None) -> Response:
+                 ep: str | None = None, heights: dict[str, int] | None = None) -> Response:
+    heights = heights or {}
     ET.register_namespace("torznab", TORZNAB_NS)
     ET.register_namespace("newznab", NEWZNAB_NS)
     rss = ET.Element("rss", {"version": "2.0"})
@@ -224,6 +250,10 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
         item = ET.SubElement(channel, "item")
         title = release_title(query, season, ep, r.name) if query is not None else \
             (r.name.rsplit(".", 1)[0] if "." in r.name else r.name)
+        # Label quality from the real video height when the name lacks one,
+        # so *arr doesn't reject the release as "Unknown" quality.
+        if not _RES_RE.search(title) and heights.get(r.ident):
+            title = f"{title} {heights[r.ident]}p"
         ET.SubElement(item, "title").text = title
         ET.SubElement(item, "guid", {"isPermaLink": "false"}).text = f"websharr-{r.ident}"
         # The saved file keeps the raw filename; the folder/title (nzbname) carries
@@ -311,7 +341,9 @@ async def torznab_api(request: Request):
 
     merged.sort(key=lambda r: (-relevance(queries, r.name), -r.size))
     logger.info("Newznab %s q=%r -> %d results", t, q, len(merged))
-    return _render_feed(request, merged[:limit], category,
+    shown = merged[:limit]
+    heights = await _resolutions(client, shown)
+    return _render_feed(request, shown, category, heights=heights,
                         query=q, season=(season if t == "tvsearch" else None), ep=ep)
 
 
