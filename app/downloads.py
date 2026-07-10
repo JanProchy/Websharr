@@ -22,6 +22,7 @@ from .webshare import WebshareClient, WebshareError
 logger = logging.getLogger("websharr.downloads")
 
 CHUNK_SIZE = 1024 * 1024
+HISTORY_CAP = 500  # keep this many completed/failed records in the UI history
 
 
 def _total_size(resp: httpx.Response, offset: int) -> int:
@@ -55,6 +56,10 @@ class Job:
     storage: str = ""  # final job directory (what Sonarr imports from)
     added_ts: float = field(default_factory=time.time)
     completed_ts: float = 0.0
+    # Sonarr removes a download from the SABnzbd history once it has imported it;
+    # we honor that for the SABnzbd view but keep the record in the Websharr UI
+    # history. This flag hides it from Sonarr only.
+    sab_hidden: bool = False
 
     @property
     def job_name(self) -> str:
@@ -159,9 +164,32 @@ class DownloadManager:
         logger.info("Resumed %s (%s)", nzo_id, job.name)
         return True
 
-    def history_jobs(self) -> list[Job]:
-        jobs = [j for j in self._jobs.values() if j.status in ("completed", "failed")]
+    def history_jobs(self, include_hidden: bool = True) -> list[Job]:
+        """Completed/failed jobs, newest first. `include_hidden=False` drops the
+        ones Sonarr already removed from its own history (the SABnzbd view)."""
+        jobs = [j for j in self._jobs.values()
+                if j.status in ("completed", "failed")
+                and (include_hidden or not j.sab_hidden)]
         return sorted(jobs, key=lambda j: j.completed_ts, reverse=True)
+
+    def hide_from_sab(self, nzo_id: str, del_files: bool = False) -> bool:
+        """Sonarr imported & removed this download: hide it from the SABnzbd
+        history but keep the record for the Websharr UI. Files may be dropped."""
+        job = self._jobs.get(nzo_id)
+        if job is None:
+            return False
+        job.sab_hidden = True
+        if del_files and job.storage:
+            shutil.rmtree(job.storage, ignore_errors=True)
+        self._save_state()
+        return True
+
+    def clear_history(self) -> int:
+        """Remove all completed/failed records from the Websharr history."""
+        gone = [j.nzo_id for j in self._jobs.values() if j.status in ("completed", "failed")]
+        for nzo_id in gone:
+            self.delete(nzo_id)
+        return len(gone)
 
     def retry(self, nzo_id: str) -> Job | None:
         """Re-queue a failed history job; resumes from its partial file if any."""
@@ -231,7 +259,17 @@ class DownloadManager:
         finally:
             self._tasks.pop(job.nzo_id, None)
             if job.nzo_id in self._jobs:
+                self._prune_history()
                 self._save_state()
+
+    def _prune_history(self) -> None:
+        """Cap the retained history so state.json can't grow without bound."""
+        history = sorted(
+            (j for j in self._jobs.values() if j.status in ("completed", "failed")),
+            key=lambda j: j.completed_ts, reverse=True,
+        )
+        for job in history[HISTORY_CAP:]:
+            self.delete(job.nzo_id)
 
     async def _download(self, job: Job) -> None:
         url = await self._client.file_link(job.ident)

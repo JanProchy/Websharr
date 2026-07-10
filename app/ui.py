@@ -267,6 +267,7 @@ async def ui_status(request: Request):
     return {
         "app": "websharr",
         "version": __version__,
+        "user": settings.auth_username or None,       # the signed-in Websharr account
         "webshare_user": config.webshare_username or None,
         "queue": len(manager.queue_jobs()),
         "history": len(manager.history_jobs()),
@@ -287,6 +288,25 @@ async def ui_history(request: Request):
         return _unauthorized()
     manager: DownloadManager = request.app.state.downloads
     return {"jobs": [_job_json(j) for j in manager.history_jobs()]}
+
+
+@router.post("/ui/api/history/delete")
+async def ui_history_delete(request: Request):
+    """Really remove a Websharr history record (unlike Sonarr's hide)."""
+    if not _authorized(request):
+        return _unauthorized()
+    body = await request.json()
+    nzo_id = body.get("nzo_id", "")
+    ok = request.app.state.downloads.delete(nzo_id, del_files=bool(body.get("del_files")))
+    return {"ok": ok}
+
+
+@router.post("/ui/api/history/clear")
+async def ui_history_clear(request: Request):
+    if not _authorized(request):
+        return _unauthorized()
+    removed = request.app.state.downloads.clear_history()
+    return {"ok": True, "removed": removed}
 
 
 def _is_video(name: str) -> bool:

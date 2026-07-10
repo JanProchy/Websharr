@@ -86,6 +86,32 @@ def test_failed_download_lands_in_history(client, fake_webshare):
     assert slot["fail_message"]
 
 
+def test_history_hidden_from_sonarr_kept_in_ui(client, fake_webshare):
+    """Sonarr removing an imported download from its history must not wipe it
+    from the Websharr UI history; only a UI delete truly removes it."""
+    nzb = build_nzb("hx", "Zaklinac.S01E01.mkv", 100)
+    nzo_id = client.post(
+        "/sabnzbd/api",
+        params={"mode": "addfile", "apikey": "testkey", "cat": "tv"},
+        files={"nzbfile": ("Zaklinac S01E01.nzb", nzb.encode(), "application/x-nzb")},
+    ).json()["nzo_ids"][0]
+    manager = app.state.downloads
+    assert wait_for(lambda: (j := manager.get(nzo_id)) and j.status == "failed")
+
+    # Sonarr-style history delete -> gone from the SABnzbd view...
+    _api(client, mode="history", name="delete", value=nzo_id)
+    sab_slots = _api(client, mode="history").json()["history"]["slots"]
+    assert all(s["nzo_id"] != nzo_id for s in sab_slots)
+    # ...but still present in the Websharr UI history.
+    ui_hist = client.get("/ui/api/history", params={"apikey": "testkey"}).json()["jobs"]
+    assert any(j["nzo_id"] == nzo_id for j in ui_hist)
+
+    # A UI delete really removes it.
+    client.post("/ui/api/history/delete", params={"apikey": "testkey"}, json={"nzo_id": nzo_id})
+    ui_hist2 = client.get("/ui/api/history", params={"apikey": "testkey"}).json()["jobs"]
+    assert all(j["nzo_id"] != nzo_id for j in ui_hist2)
+
+
 def test_addurl(client, fake_webshare):
     url = "http://websharr:9797/torznab/nzb/idX?apikey=testkey&name=Film.2024.mkv&size=1234"
     resp = client.post("/sabnzbd/api", params={

@@ -69,6 +69,13 @@ def test_session_auth_works_for_data_endpoints(client):
     assert client.get("/ui/api/queue").status_code == 403
 
 
+def test_status_reports_signed_in_websharr_user(client):
+    _setup(client)  # creates the "morte" Websharr account
+    body = client.get("/ui/api/status").json()
+    assert body["user"] == "morte"                    # header shows Websharr account
+    assert body["webshare_user"] == "ws@example.com"  # separate field
+
+
 def test_settings_roundtrip_and_live_client_update(client, fake_webshare):
     _setup(client)
 

@@ -557,6 +557,7 @@ const App = {
 
   show(tab) {
     this.tab = tab;
+    if (location.hash.slice(1) !== tab) location.hash = tab;
     for (const t of ["queue", "history", "search", "log", "help", "settings"]) {
       $("tab-" + t).classList.toggle("active", t === tab);
       $("view-" + t).classList.toggle("active", t === tab);
@@ -628,7 +629,7 @@ const App = {
         ui("status"), ui("queue"), ui("history"),
       ]);
       this.setOffline(false);
-      $("user-name").textContent = status.webshare_user || "not configured";
+      $("user-name").textContent = status.user || "—";
       $("queue-count").textContent = queue.jobs.length;
       this.renderQueue(queue.jobs);
       this.renderHistory(history.jobs);
@@ -760,7 +761,7 @@ const App = {
     for (const row of $("history-list").children) {
       const id = row.dataset.id;
       row.querySelector('[data-act="del"]').onclick = async () => {
-        await sab({ mode: "history", name: "delete", value: id }).catch(() => {});
+        await uiPost("history/delete", { nzo_id: id }).catch(() => {});
         this.refresh(true);
       };
       const retry = row.querySelector('[data-act="retry"]');
@@ -777,7 +778,7 @@ const App = {
       <button class="confirm-yes" style="background:var(--red);border:none;color:var(--bg);border-radius:7px;padding:4px 12px;font-size:13px;font-weight:800;cursor:pointer">Clear all</button>
       <button class="cancel ghost">Cancel</button>`;
     $("clear-wrap").querySelector(".confirm-yes").onclick = async () => {
-      await sab({ mode: "history", name: "delete", value: "all" }).catch(() => {});
+      await uiPost("history/clear", {}).catch(() => {});
       this.resetClear(); this.refresh(true);
     };
     $("clear-wrap").querySelector(".cancel").onclick = () => this.resetClear();
@@ -1049,8 +1050,14 @@ $("set-pass-save").onclick = async () => {
   } catch (e) { sresult("set-pass-result", false, e.message); }
 };
 
+const TABS = ["queue", "history", "search", "log", "help", "settings"];
+window.addEventListener("hashchange", () => {
+  const t = location.hash.slice(1);
+  if (TABS.includes(t) && t !== App.tab) App.show(t);
+});
 App.typeChanged();
-App.refresh(true);
+// Open the tab from the URL (#history, …) so a refresh stays put.
+App.show(TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "queue");
 setInterval(() => App.refresh(), 2000);
 </script>
 </body>

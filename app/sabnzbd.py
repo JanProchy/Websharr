@@ -198,15 +198,17 @@ async def sabnzbd_api(request: Request):
         if params.get("name") == "delete":
             value = params.get("value", "")
             if value == "all":
-                for job in list(manager.history_jobs()):
-                    manager.delete(job.nzo_id)
+                for job in list(manager.history_jobs(include_hidden=False)):
+                    manager.hide_from_sab(job.nzo_id)
                 return JSONResponse({"status": True})
+            # Sonarr removes an imported download from its history: hide it from
+            # the SABnzbd view but keep the record in the Websharr UI history.
             ok = all(
-                manager.delete(nzo_id, del_files=params.get("del_files") == "1")
+                manager.hide_from_sab(nzo_id, del_files=params.get("del_files") == "1")
                 for nzo_id in value.split(",") if nzo_id
             )
             return JSONResponse({"status": ok})
-        slots = [_history_slot(j) for j in manager.history_jobs()]
+        slots = [_history_slot(j) for j in manager.history_jobs(include_hidden=False)]
         return JSONResponse({"history": {
             "slots": slots,
             "noofslots": len(slots),
