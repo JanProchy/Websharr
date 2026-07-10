@@ -104,8 +104,12 @@ def _get_config_payload() -> dict:
     }
 
 
-async def _extract_nzb_payload(request: Request, params) -> tuple[str, str, int] | None:
-    """Return (ident, name, size) from an addfile upload or addurl link."""
+async def _extract_nzb_payload(request: Request, params) -> tuple[str, str, int, str] | None:
+    """Return (ident, name, size, title) from an addfile upload or addurl link.
+
+    `title` is the *arr release name (with SxxEyy) used for the job folder:
+    addurl carries it as nzbname; addfile puts it in the uploaded file's name.
+    """
     mode = params.get("mode")
     if mode == "addurl":
         url = params.get("name", "")
@@ -119,7 +123,8 @@ async def _extract_nzb_payload(request: Request, params) -> tuple[str, str, int]
             size = int(qs.get("size", ["0"])[0])
         except ValueError:
             size = 0
-        return m.group(1), name, size
+        title = (params.get("nzbname") or qs.get("nzbname", [""])[0] or "").strip()
+        return m.group(1), name, size, title
 
     form = await request.form()
     for key in ("nzbfile", "name"):
@@ -127,7 +132,10 @@ async def _extract_nzb_payload(request: Request, params) -> tuple[str, str, int]
         if upload is not None and hasattr(upload, "read"):
             payload = parse_nzb(await upload.read())
             if payload is not None:
-                return payload.ident, payload.name, payload.size
+                fname = getattr(upload, "filename", "") or ""
+                title = re.sub(r"\.nzb$", "", fname, flags=re.IGNORECASE).strip()
+                title = title or (params.get("nzbname") or "").strip()
+                return payload.ident, payload.name, payload.size, title
     return None
 
 
@@ -210,12 +218,10 @@ async def sabnzbd_api(request: Request):
         extracted = await _extract_nzb_payload(request, params)
         if extracted is None:
             return _err("Could not extract Webshare ident from NZB")
-        ident, name, size = extracted
+        ident, name, size, title = extracted
         category = params.get("cat", "*")
-        # Sonarr/Radarr (and the Websharr UI) send the release name as nzbname;
-        # use it as the job title so the download folder carries SxxExx and the
-        # *arr importer can parse the episode even from oddly-named files.
-        title = (params.get("nzbname") or "").strip()
+        # title (the *arr release name, with SxxEyy) becomes the job folder so
+        # the importer can parse the episode even from oddly-named files.
         job = manager.add(ident=ident, name=name, size=size, category=category, title=title)
         return JSONResponse({"status": True, "nzo_ids": [job.nzo_id]})
 

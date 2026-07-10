@@ -361,9 +361,13 @@ async def torznab_nzb(ident: str, request: Request):
         size = 0
 
     content = build_nzb(ident, name, size)
-    filename = (name.rsplit(".", 1)[0] if "." in name else name) + ".nzb"
+    # Name the NZB after the parseable release title (nzbname) when present:
+    # Sonarr re-uploads it to the SABnzbd client using this filename as the job
+    # name, so the download folder carries SxxEyy for import.
+    stem = request.query_params.get("nzbname") or \
+        (name.rsplit(".", 1)[0] if "." in name else name)
     return Response(
         content=content,
         media_type="application/x-nzb",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f'attachment; filename="{stem}.nzb"'},
     )
