@@ -69,7 +69,7 @@ def test_ui_search_returns_json(client, fake_webshare):
     assert [r["ident"] for r in results] == ["id2", "id1"]
     assert results[0]["title"] == "Zaklinac.S01E05.2160p.CZ"
     # release name (nzbname) carries the requested SxxEyy for parseable import
-    assert results[0]["release"] == "Zaklinac S01E05 - Zaklinac.S01E05.2160p.CZ"
+    assert results[0]["release"] == "Zaklinac S01E05 - Zaklinac.2160p.CZ"
     assert results[0]["format"] == "mkv"
     assert results[0]["size"] == 12_000_000_000
     assert "/torznab/nzb/id2" in results[0]["nzb_url"]

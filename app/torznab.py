@@ -139,7 +139,12 @@ def release_title(query: str, season: str | None, ep: str | None, name: str) -> 
             prefix = f"{q} S{s:02d}"
     else:
         prefix = f"{q} S{s:02d}"
-    return f"{prefix} - {stem}".strip()
+    # Strip any SxxEyy/1x02 already in the filename so the release doesn't carry
+    # two episode markers (confuses *arr's parser: "unable to determine episode").
+    stem = re.sub(r"\b(s\d{1,2}e\d{1,3}|\d{1,2}x\d{1,3})\b", "", stem, flags=re.I)
+    stem = re.sub(r"\.{2,}", ".", stem)          # double dots left by the removal
+    stem = re.sub(r"\s{2,}", " ", stem).strip(" .-")
+    return f"{prefix} - {stem}".strip(" -")
 
 
 def _is_video(name: str) -> bool:

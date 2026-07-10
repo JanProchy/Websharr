@@ -135,11 +135,12 @@ def test_tvsearch_returns_items(client, fake_webshare):
     root = ET.fromstring(resp.content)
     items = root.findall("channel/item")
     titles = [i.findtext("title") for i in items]
-    # Titles are normalized with the requested SxxEyy so *arr can parse them;
-    # the one without a resolution gets one appended from file_info (fake=1080).
+    # Titles are normalized with the requested SxxEyy so *arr can parse them; the
+    # filename's own episode marker is stripped to avoid a duplicate, and the one
+    # without a resolution gets one appended from file_info (fake=1080).
     assert titles == [
-        "Zaklinac S01E05 - Zaklinac.S01E05.1080p.CZ",
-        "Zaklinac S01E05 - Zaklinac 1x05 dabing 1080p",
+        "Zaklinac S01E05 - Zaklinac.1080p.CZ",
+        "Zaklinac S01E05 - Zaklinac dabing 1080p",
     ]
 
     item = items[0]
