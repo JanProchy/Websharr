@@ -29,6 +29,7 @@ from .torznab import (
     VIDEO_EXTENSIONS,
     build_queries,
     matches_query,
+    parse_query,
     relevance,
     release_title,
 )
@@ -323,8 +324,8 @@ async def ui_search(request: Request):
     if t not in ("search", "tvsearch", "movie"):
         return JSONResponse({"error": f"Unknown search type '{t}'"}, status_code=400)
 
-    q = params.get("q", "")
-    queries = build_queries(t, q, params.get("season"), params.get("ep"))
+    t, q, season, ep = parse_query(t, params.get("q", ""), params.get("season"), params.get("ep"))
+    queries = build_queries(t, q, season, ep)
     if not queries:
         return {"results": [], "queries": []}
 
@@ -348,11 +349,11 @@ async def ui_search(request: Request):
             merged.append(r)
 
     merged.sort(key=lambda r: (-relevance(queries, r.name), -r.size))
-    season = params.get("season") if t == "tvsearch" else None
-    ep = params.get("ep") if t == "tvsearch" else None
+    rel_season = season if t == "tvsearch" else None
+    rel_ep = ep if t == "tvsearch" else None
     return {
         "results": [
-            _result_json(request, r, release_title(q, season, ep, r.name))
+            _result_json(request, r, release_title(q, rel_season, rel_ep, r.name))
             for r in merged[:limit]
         ],
         "queries": queries,

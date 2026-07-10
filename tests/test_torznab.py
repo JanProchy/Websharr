@@ -1,6 +1,6 @@
 import xml.etree.ElementTree as ET
 
-from app.torznab import build_queries, matches_query, release_title
+from app.torznab import build_queries, matches_query, parse_query, release_title
 from app.webshare import SearchResult
 
 TZNS = "{http://torznab.com/schemas/2015/feed}"
@@ -26,6 +26,16 @@ def test_release_title_normalizes_for_tvsearch():
     assert release_title("Skvrna", "2", None, "whatever.mkv") == "Skvrna S02 - whatever"
     # Non-tv search leaves the name (stem) untouched.
     assert release_title("Vlny 2024", None, None, "Vlny.2024.1080p.mkv") == "Vlny.2024.1080p"
+
+
+def test_parse_query_extracts_episode_from_text():
+    # Typing "skvrna s01e05" into the box (no season/ep fields) is parsed out.
+    assert parse_query("tvsearch", "skvrna s01e05", None, None) == ("tvsearch", "skvrna", "01", "05")
+    assert parse_query("search", "Skvrna 1x05", None, None) == ("tvsearch", "Skvrna", "1", "05")
+    # Explicit season/ep from the caller win untouched.
+    assert parse_query("tvsearch", "skvrna", "2", "3") == ("tvsearch", "skvrna", "2", "3")
+    # No episode marker -> unchanged.
+    assert parse_query("movie", "Vlny 2024", None, None) == ("movie", "Vlny 2024", None, None)
 
 
 def test_matches_query_drops_loose_fulltext_hits():

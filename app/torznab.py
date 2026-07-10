@@ -67,6 +67,26 @@ def _caps() -> Response:
     return _xml_response(caps)
 
 
+_EP_IN_QUERY = re.compile(
+    r"^(?P<series>.*?)\s*(?:s(?P<s>\d{1,2})e(?P<e>\d{1,3})|(?P<s2>\d{1,2})x(?P<e2>\d{1,3}))\b",
+    re.I,
+)
+
+
+def parse_query(t: str, q: str, season: str | None, ep: str | None):
+    """Pull an SxxEyy / 1x05 out of the query text when season/ep weren't
+    passed separately — e.g. a user typing "skvrna s01e05" into the box.
+    Returns (type, series, season, ep)."""
+    q = (q or "").strip()
+    if season is None and ep is None:
+        m = _EP_IN_QUERY.match(q)
+        if m:
+            series = (m.group("series") or "").strip()
+            if series:
+                return "tvsearch", series, (m.group("s") or m.group("s2")), (m.group("e") or m.group("e2"))
+    return t, q, season, ep
+
+
 def build_queries(t: str, q: str, season: str | None, ep: str | None) -> list[str]:
     """Build Webshare search query variants for a Torznab request."""
     q = (q or "").strip()
@@ -226,8 +246,8 @@ async def torznab_api(request: Request):
     if t not in ("search", "tvsearch", "movie"):
         return _error(203, f"Function '{t}' not available")
 
-    q = params.get("q", "")
-    queries = build_queries(t, q, params.get("season"), params.get("ep"))
+    t, q, season, ep = parse_query(t, params.get("q", ""), params.get("season"), params.get("ep"))
+    queries = build_queries(t, q, season, ep)
     category = CAT_TV if t == "tvsearch" else CAT_MOVIES
 
     if not queries:
@@ -266,9 +286,8 @@ async def torznab_api(request: Request):
 
     merged.sort(key=lambda r: (-relevance(queries, r.name), -r.size))
     logger.info("Newznab %s q=%r -> %d results", t, q, len(merged))
-    season = params.get("season") if t == "tvsearch" else None
     return _render_feed(request, merged[:limit], category,
-                        query=q, season=season, ep=params.get("ep"))
+                        query=q, season=(season if t == "tvsearch" else None), ep=ep)
 
 
 @router.get("/torznab/nzb/{ident}")
