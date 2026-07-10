@@ -914,13 +914,15 @@ const App = {
   async doGrab(r, nzbname, cat, btn, slot) {
     btn.disabled = true;
     btn.textContent = "…";
+    // Capture the row wrapper now — clearing the slot below detaches btn from
+    // the DOM, so btn.closest() would return null afterwards.
+    const rgrab = btn.closest(".rwrap").querySelector(".rgrab");
     try {
       // Exactly what Sonarr does: push the fake-NZB URL to the SABnzbd API,
       // with a parseable release name as nzbname so the folder carries SxxEyy.
       const body = await sab({ mode: "addurl", name: r.nzb_url, nzbname, cat }, true);
       if (!body.status) throw new Error(body.error || "addurl failed");
       if (slot) slot.innerHTML = "";
-      const rgrab = btn.closest(".rwrap").querySelector(".rgrab");
       if (rgrab) rgrab.innerHTML = `<span class="grabbed">✓ In queue</span>`;
       this.refresh(true);
     } catch (e) {
