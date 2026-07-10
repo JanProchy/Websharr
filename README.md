@@ -36,7 +36,11 @@ account, the API key and your password.
 
 ## Setup in Sonarr / Radarr
 
-### Indexer (Settings → Indexers → Add → Torznab, Custom)
+### Indexer (Settings → Indexers → Add → Newznab, Custom)
+
+Add it as **Newznab**, not Torznab. Newznab is the usenet protocol, so Sonarr/Radarr
+route grabs to the paired SABnzbd download client below. A Torznab indexer is treated
+as torrent and its grabs would be sent to a torrent client instead.
 
 | Field | Value |
 |---|---|
@@ -45,7 +49,7 @@ account, the API key and your password.
 | API Key | copy from Websharr → Settings |
 | Categories | 5000 (TV) / 2000 (Movies) |
 
-Also works through Prowlarr as a **Generic Torznab** indexer.
+Also works through Prowlarr as a **Generic Newznab** indexer.
 
 ### Download client (Settings → Download Clients → Add → SABnzbd)
 

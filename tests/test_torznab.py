@@ -4,6 +4,7 @@ from app.torznab import build_queries
 from app.webshare import SearchResult
 
 TZNS = "{http://torznab.com/schemas/2015/feed}"
+NZNS = "{http://www.newznab.com/DTD/2010/feeds/attributes/}"
 
 
 def test_build_queries():
@@ -53,6 +54,25 @@ def test_tvsearch_returns_items(client, fake_webshare):
     assert "apikey=testkey" in enclosure.get("url")
     cats = {a.get("name"): a.get("value") for a in item.findall(f"{TZNS}attr")}
     assert cats["category"] == "5000"
+    # Newznab namespace attrs must be present too (indexer is added as Newznab).
+    ncats = {a.get("name"): a.get("value") for a in item.findall(f"{NZNS}attr")}
+    assert ncats["category"] == "5000"
+
+
+def test_empty_query_returns_placeholder_in_requested_category(client):
+    """Sonarr's indexer test sends an empty RSS query and rejects zero results.
+    We return one unparseable placeholder in the requested category instead."""
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "cat": "5000,5040",
+    })
+    root = ET.fromstring(resp.content)
+    items = root.findall("channel/item")
+    assert len(items) == 1
+    ncats = {a.get("name"): a.get("value") for a in items[0].findall(f"{NZNS}attr")}
+    assert ncats["category"] == "5000"
+    # Title carries no SxxExx / year, so the *arr parser can never match it.
+    title = items[0].findtext("title")
+    assert "S0" not in title and "x0" not in title
 
 
 def test_nzb_download(client):

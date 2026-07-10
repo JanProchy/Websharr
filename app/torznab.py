@@ -1,8 +1,14 @@
-"""Torznab indexer endpoint backed by Webshare search.
+"""Newznab/Torznab indexer endpoint backed by Webshare search.
 
 Mounted at /torznab/api. Supports t=caps, t=search, t=tvsearch, t=movie.
 Only q-based queries are advertised (Webshare search is filename-based, so
 imdbid/tvdbid lookups are not possible).
+
+Add this to Sonarr/Radarr as a **Newznab** indexer, not Torznab: the paired
+download client is SABnzbd (usenet protocol), and Sonarr only routes a grab
+to a usenet client when the release came from a usenet (Newznab) indexer.
+The feed emits attributes in both the newznab and torznab namespaces so it
+parses correctly either way.
 """
 
 import email.utils
@@ -23,6 +29,7 @@ logger = logging.getLogger("websharr.torznab")
 router = APIRouter()
 
 TORZNAB_NS = "http://torznab.com/schemas/2015/feed"
+NEWZNAB_NS = "http://www.newznab.com/DTD/2010/feeds/attributes/"
 
 CAT_MOVIES = "2000"
 CAT_TV = "5000"
@@ -85,6 +92,7 @@ def _is_video(name: str) -> bool:
 
 def _render_feed(request: Request, results: list[SearchResult], category: str) -> Response:
     ET.register_namespace("torznab", TORZNAB_NS)
+    ET.register_namespace("newznab", NEWZNAB_NS)
     rss = ET.Element("rss", {"version": "2.0"})
     channel = ET.SubElement(rss, "channel")
     ET.SubElement(channel, "title").text = "Websharr"
@@ -113,10 +121,13 @@ def _render_feed(request: Request, results: list[SearchResult], category: str) -
             "length": str(r.size),
             "type": "application/x-nzb",
         })
-        ET.SubElement(item, "{%s}attr" % TORZNAB_NS, {"name": "category", "value": category})
-        ET.SubElement(item, "{%s}attr" % TORZNAB_NS, {"name": "size", "value": str(r.size)})
-        ET.SubElement(item, "{%s}attr" % TORZNAB_NS,
-                      {"name": "grabs", "value": str(r.positive_votes)})
+        # Emit attrs in both namespaces so the feed parses whether Sonarr/Radarr
+        # treats it as Newznab (usenet — the correct choice) or Torznab.
+        for ns in (NEWZNAB_NS, TORZNAB_NS):
+            ET.SubElement(item, "{%s}attr" % ns, {"name": "category", "value": category})
+            ET.SubElement(item, "{%s}attr" % ns, {"name": "size", "value": str(r.size)})
+            ET.SubElement(item, "{%s}attr" % ns,
+                          {"name": "grabs", "value": str(r.positive_votes)})
 
     return _xml_response(rss)
 
@@ -138,8 +149,18 @@ async def torznab_api(request: Request):
     category = CAT_TV if t == "tvsearch" else CAT_MOVIES
 
     if not queries:
-        # RSS/empty test query: return an empty (valid) feed.
-        return _render_feed(request, [], category)
+        # Webshare has no RSS/"latest" feed, but Sonarr/Radarr reject an indexer
+        # whose capability-test query returns zero items ("no results in the
+        # configured categories"). Return one deliberately unparseable placeholder
+        # in the requested category so the test passes; the decision engine has no
+        # title to parse during RSS sync, so it is never grabbed.
+        cat = (params.get("cat", "") or "").split(",")[0].strip() or category
+        placeholder = SearchResult(
+            ident="websharr-online",
+            name="Websharr online - no automatic feed, use interactive search",
+            size=1,
+        )
+        return _render_feed(request, [placeholder], cat)
 
     limit = min(int(params.get("limit", str(config.search_limit)) or config.search_limit), 100)
     offset = int(params.get("offset", "0") or 0)
