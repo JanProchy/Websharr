@@ -152,6 +152,31 @@
   .rdur { width: 60px; }
   .rmeta.dim { color: var(--faint); }
 
+  /* help */
+  #view-help { max-width: 828px; margin: 0 auto; }
+  .hcard { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 18px 20px; margin-bottom: 12px; }
+  .hcard h3 { margin: 0 0 10px; font-size: 14px; font-weight: 800; display: flex; align-items: center; }
+  .hcard .badge { background: var(--accent-soft); color: var(--accent); border: 1px solid rgba(77,182,245,0.4);
+    font-size: 11px; font-weight: 800; letter-spacing: .5px; border-radius: 6px; padding: 2px 8px; }
+  .hcard code { background: var(--inner); border: 1px solid var(--border-soft); border-radius: 5px;
+    padding: 1px 6px; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: #c7d8e5; }
+  .htab { width: 100%; border-collapse: collapse; margin-top: 4px; }
+  .htab td { padding: 7px 8px; border-bottom: 1px solid var(--border-soft); font-size: 13px; }
+  .htab tr:last-child td { border-bottom: none; }
+  .htab td:first-child { color: var(--muted); font-weight: 700; width: 130px; }
+  .hlist { margin: 4px 0 0; padding-left: 18px; color: var(--muted); font-size: 13px; line-height: 1.7; }
+  .hlist li { margin-bottom: 4px; }
+  .hlist b { color: #c7d8e5; }
+  svg.flow { width: 100%; height: auto; display: block; }
+  svg.flow .fn rect { fill: var(--inner); stroke: var(--border); stroke-width: 1.5; }
+  svg.flow .fn.hub rect { stroke: var(--accent); stroke-width: 2; }
+  svg.flow .fn text { fill: var(--text); font: 800 14px 'Nunito', sans-serif; text-anchor: middle; }
+  svg.flow .fn text.sm { fill: var(--muted); font: 700 11px 'Nunito', sans-serif; }
+  svg.flow .lbl { fill: var(--faint); font: 700 11px 'Nunito', sans-serif; text-anchor: middle; }
+  svg.flow .lbl.acc { fill: var(--accent); }
+  svg.flow .lbl.grn { fill: var(--green); }
+
   /* log console */
   .logtail { color: var(--muted); font-size: 12.5px; font-weight: 700; display: flex;
     align-items: center; gap: 6px; cursor: pointer; }
@@ -207,6 +232,7 @@
     <button id="tab-history" onclick="App.show('history')">History</button>
     <button id="tab-search" onclick="App.show('search')">Search</button>
     <button id="tab-log" onclick="App.show('log')">Log</button>
+    <button id="tab-help" onclick="App.show('help')">Help</button>
     <button id="tab-settings" onclick="App.show('settings')">Settings</button>
   </nav>
   <div class="spacer"></div>
@@ -264,6 +290,93 @@
       <label class="logtail"><input type="checkbox" id="log-follow" checked> Follow</label>
     </div>
     <div id="log-console"></div>
+  </section>
+
+  <section class="view" id="view-help">
+    <div class="viewhead"><h2>Help</h2>
+      <span class="sub">How Websharr fits into your media stack, and how to wire it into Sonarr / Radarr.</span></div>
+
+    <div class="hcard">
+      <h3>How the flow works</h3>
+      <svg class="flow" viewBox="0 0 820 300" role="img" aria-label="Media stack flow diagram">
+        <defs>
+          <marker id="arw" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+            <path d="M0,0 L7,3 L0,6 Z" fill="#5f7a90"/>
+          </marker>
+          <marker id="arwA" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+            <path d="M0,0 L7,3 L0,6 Z" fill="#4db6f5"/>
+          </marker>
+        </defs>
+        <!-- nodes -->
+        <g class="fn"><rect x="24" y="42" width="138" height="52" rx="10"/><text x="93" y="73">Jellyseerr</text></g>
+        <g class="fn"><rect x="214" y="42" width="150" height="52" rx="10"/><text x="289" y="66">Sonarr / Radarr</text><text x="289" y="82" class="sm">*arr</text></g>
+        <g class="fn hub"><rect x="430" y="30" width="180" height="76" rx="10"/><text x="520" y="55">Websharr</text><text x="520" y="72" class="sm">Newznab indexer</text><text x="520" y="88" class="sm">+ SABnzbd client</text></g>
+        <g class="fn"><rect x="672" y="42" width="128" height="52" rx="10"/><text x="736" y="66">Webshare.cz</text><text x="736" y="82" class="sm">premium</text></g>
+        <g class="fn"><rect x="214" y="212" width="150" height="52" rx="10"/><text x="289" y="243">Jellyfin</text></g>
+
+        <!-- forward arrows -->
+        <line x1="162" y1="68" x2="212" y2="68" stroke="#5f7a90" stroke-width="2" marker-end="url(#arw)"/>
+        <text x="187" y="60" class="lbl">request</text>
+        <line x1="364" y1="68" x2="428" y2="68" stroke="#4db6f5" stroke-width="2" marker-end="url(#arwA)"/>
+        <text x="396" y="60" class="lbl acc">search + grab</text>
+        <!-- websharr <-> webshare (download) -->
+        <line x1="610" y1="62" x2="670" y2="62" stroke="#5f7a90" stroke-width="2" marker-end="url(#arw)"/>
+        <line x1="670" y1="78" x2="612" y2="78" stroke="#45d483" stroke-width="2" marker-end="url(#arw)"/>
+        <text x="641" y="102" class="lbl grn">download</text>
+        <!-- websharr -> arr (completed handoff) -->
+        <path d="M470,106 C470,150 360,150 340,190" fill="none" stroke="#45d483" stroke-width="2" marker-end="url(#arw)"/>
+        <text x="452" y="150" class="lbl grn">completed</text>
+        <!-- arr -> jellyfin (import) -->
+        <line x1="289" y1="94" x2="289" y2="210" stroke="#5f7a90" stroke-width="2" marker-end="url(#arw)"/>
+        <text x="299" y="156" class="lbl" text-anchor="start">import + rename</text>
+      </svg>
+      <p class="shint" style="margin-top:14px">
+        You request something in Jellyseerr → Sonarr/Radarr search through Websharr's
+        <b>Newznab indexer</b> → on grab, Websharr's <b>SABnzbd download client</b> pulls the
+        file from your Webshare premium account → Sonarr/Radarr import and rename it into the
+        library → Jellyfin plays it. Websharr is the same container playing both roles.
+      </p>
+    </div>
+
+    <div class="hcard">
+      <h3>1 · Add the indexer &nbsp;<span class="badge">Newznab</span></h3>
+      <p class="shint">Sonarr/Radarr → Settings → Indexers → <b>+</b> → <b>Newznab</b> (Custom).
+        Add it as Newznab, <b>not</b> Torznab — Torznab is treated as torrent and its grabs
+        would go to a torrent client instead of Websharr.</p>
+      <table class="htab">
+        <tr><td>URL</td><td><code>http://websharr:9797/torznab</code></td></tr>
+        <tr><td>API Path</td><td><code>/api</code></td></tr>
+        <tr><td>API Key</td><td>copy from <b>Settings</b> (in this UI)</td></tr>
+        <tr><td>Categories</td><td><code>5000</code> (TV) · <code>2000</code> (Movies)</td></tr>
+      </table>
+    </div>
+
+    <div class="hcard">
+      <h3>2 · Add the download client &nbsp;<span class="badge">SABnzbd</span></h3>
+      <p class="shint">Sonarr/Radarr → Settings → Download Clients → <b>+</b> → <b>SABnzbd</b>.
+        Same API key as the indexer.</p>
+      <table class="htab">
+        <tr><td>Host</td><td><code>websharr</code></td></tr>
+        <tr><td>Port</td><td><code>9797</code></td></tr>
+        <tr><td>URL Base</td><td><code>/sabnzbd</code></td></tr>
+        <tr><td>API Key</td><td>copy from <b>Settings</b></td></tr>
+        <tr><td>Category</td><td><code>tv</code> (Sonarr) · <code>movies</code> (Radarr)</td></tr>
+      </table>
+    </div>
+
+    <div class="hcard">
+      <h3>Good to know</h3>
+      <ul class="hlist">
+        <li>Host names like <code>websharr</code> work when everything is on the same Docker
+          network. Otherwise use the LAN IP and port.</li>
+        <li>Websharr and Sonarr/Radarr must see the <b>same download folder</b> so imports
+          find the files — mount the same path, or set a Remote Path Mapping in *arr.</li>
+        <li>Webshare searches file names only. Websharr normalizes TV releases to
+          <code>Series SxxEyy</code> so most imports work, but the occasional oddly-named
+          CZ file still needs a manual import in Sonarr.</li>
+        <li>Watch the <b>Log</b> tab to see the *arr requests arrive in real time.</li>
+      </ul>
+    </div>
   </section>
 
   <section class="view" id="view-settings">
@@ -411,7 +524,7 @@ const App = {
 
   show(tab) {
     this.tab = tab;
-    for (const t of ["queue", "history", "search", "log", "settings"]) {
+    for (const t of ["queue", "history", "search", "log", "help", "settings"]) {
       $("tab-" + t).classList.toggle("active", t === tab);
       $("view-" + t).classList.toggle("active", t === tab);
     }
@@ -752,10 +865,33 @@ $("set-ws-save").onclick = async () => {
   } catch (e) { sresult("set-ws-result", false, e.message); }
 };
 
+async function copyText(text, field) {
+  // navigator.clipboard only exists in secure contexts (HTTPS/localhost);
+  // over plain-HTTP LAN it's undefined, so fall back to execCommand.
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (e) { /* fall through */ }
+  try {
+    if (field) { field.removeAttribute("readonly"); field.select(); field.setSelectionRange(0, text.length); }
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    if (field) field.setAttribute("readonly", "");
+    return ok;
+  } catch (e) { return false; }
+}
+
 $("set-copy-key").onclick = async () => {
-  await navigator.clipboard.writeText($("set-api-key").value).catch(() => {});
-  $("set-copy-key").textContent = "Copied!";
-  setTimeout(() => { $("set-copy-key").textContent = "Copy"; }, 1500);
+  const btn = $("set-copy-key");
+  const ok = await copyText($("set-api-key").value, $("set-api-key"));
+  btn.textContent = ok ? "Copied!" : "Select + Ctrl+C";
+  if (!ok) $("set-api-key").select();
+  setTimeout(() => { btn.textContent = "Copy"; }, 1600);
 };
 
 $("set-regen-key").onclick = async () => {
