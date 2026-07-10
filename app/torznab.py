@@ -356,7 +356,7 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
         link = (
             f"{base}/torznab/nzb/{r.ident}"
             f"?apikey={config.api_key}"
-            f"&name={urllib.parse.quote(r.name)}&size={r.size}"
+            f"&name={urllib.parse.quote(_asciify(r.name))}&size={r.size}"
             f"&nzbname={urllib.parse.quote(title)}"
         )
         ET.SubElement(item, "link").text = link

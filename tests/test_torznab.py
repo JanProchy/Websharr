@@ -209,6 +209,19 @@ def test_empty_query_returns_placeholder_in_requested_category(client):
     assert "S0" not in title and "x0" not in title
 
 
+def test_feed_download_url_is_ascii(client, fake_webshare):
+    """The download URL must carry no encoded diacritics: Prowlarr proxies via a
+    302 and re-emits the decoded URL raw in the Location header, which rejects
+    non-latin-1 chars ("Invalid non-ASCII in header 0x011B")."""
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [SearchResult("z1", "Bez vědomí.S01E02.mkv", 500)]
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "q": "Bez vedomi", "season": "1", "ep": "2",
+    })
+    url = ET.fromstring(resp.content).find("channel/item/enclosure").get("url")
+    assert "%C4%9B" not in url and "vedomi" in url  # transliterated, not encoded
+
+
 def test_search_labels_quality_from_fileinfo(client, fake_webshare):
     """A CZ file with no resolution in its name gets one appended from
     file_info's height, so *arr can detect the quality."""
