@@ -29,13 +29,17 @@ In `docker-compose.yml`, adjust the `/downloads` volume so it points to the same
 ## Web UI
 
 A monitoring and testing interface runs at **`http://localhost:9797/ui`**
-(sign-in required, Sonarr-style):
+(the bare domain redirects here; sign-in required, Sonarr-style):
 
-- **Queue / History** — live progress, retry, clear.
+- **Queue** — live progress with **pause / resume** and delete per download.
+- **History** — completed/failed downloads with retry and clear.
 - **Search** — manual search whose **Grab** button pushes a release through the
   same SABnzbd flow Sonarr uses; results show container, resolution and length.
+  When a grabbed file has no `SxxEyy`/year in its name, a small form asks for the
+  series/season/episode (or title/year) so the import parses.
 - **Log** — live backend activity, including the Sonarr/Radarr HTTP requests, so
   you can watch the integration from the browser.
+- **Help** — the flow diagram and the Sonarr/Radarr setup steps below, in-app.
 - **Settings** — Webshare account, API key, password.
 
 For TV searches Websharr normalizes release names to `Series SxxEyy - …` so
@@ -57,8 +61,6 @@ as torrent and its grabs would be sent to a torrent client instead.
 | API Key | copy from Websharr → Settings |
 | Categories | 5000 (TV) / 2000 (Movies) |
 
-Also works through Prowlarr as a **Generic Newznab** indexer.
-
 ### Download client (Settings → Download Clients → Add → SABnzbd)
 
 | Field | Value |
@@ -68,6 +70,24 @@ Also works through Prowlarr as a **Generic Newznab** indexer.
 | URL Base | `/sabnzbd` |
 | API Key | copy from Websharr → Settings |
 | Category | `tv` (Sonarr) / `movies` (Radarr) |
+
+Host names like `websharr` work when everything shares a Docker network; otherwise
+use the LAN IP and port. Also works through **Prowlarr** — add it there as a
+**Generic Newznab** indexer (same URL/API path/key) and let Prowlarr sync it to
+Sonarr/Radarr; the SABnzbd download client is still added directly in each *arr.
+
+## Good to know
+
+- **Shared download folder.** Websharr and Sonarr/Radarr must see the *same*
+  finished-download folder, or import can't find the files. Mount the same host
+  path into all of them, or set a Remote Path Mapping in *arr. Websharr reports
+  paths under its `COMPLETE_DIR`.
+- **Czech content and quality profiles.** Many CZ releases have no resolution in
+  the filename; Websharr reads the real height from Webshare and labels them
+  (`1080p`, …) so quality is detected. But a profile that blocks non-English
+  (e.g. a *Not English* custom format) will still reject Czech releases — allow
+  Czech (or use a dedicated profile) if you grab CZ content.
+- Watch the **Log** tab to see the *arr requests arrive in real time.
 
 ## Configuration (environment variables)
 
@@ -82,12 +102,29 @@ Also works through Prowlarr as a **Generic Newznab** indexer.
 | `MAX_CONCURRENT_DOWNLOADS` | `2` | concurrent downloads |
 | `SEARCH_LIMIT` | `60` | max results from Webshare per query |
 
+## How search results are cleaned up
+
+Webshare's fulltext is loose (OR-based) and matches on any token, so raw results
+are noisy. For a TV query Websharr:
+
+- tries `S01E05`, `1x05` and a bare `05` (common for CZ uploads) variants;
+- keeps only files whose name **starts with the show title** (drops unrelated
+  files that merely contain a shared word or the episode number);
+- keeps only the **requested episode** (read from the file name), so a search
+  for E05 doesn't return E01–E08;
+- ranks by relevance, and labels quality from the real video resolution.
+
+Even so, because matching is filename-based, the occasional odd result slips
+through — use Interactive Search / the UI when it does.
+
 ## Limitations
 
-- Webshare searches **by file names only** — no metadata. Websharr tries both `S01E05` and `1x05` variants, filters to video files, and sorts by size, but result quality ultimately depends on how files on Webshare are named. Occasional manual intervention (Interactive Search) is needed.
-- Searching by IMDb/TVDB ID is not possible (caps doesn't advertise it, so *arr sends text queries).
-
-Interrupted downloads (container restart, network outage) resume where they left off — Websharr continues a partially downloaded file with an HTTP Range request; a failed job can be restarted via SABnzbd `mode=retry`.
+- Webshare searches **by file names only** — no metadata; result quality depends
+  on how files are named. Searching by IMDb/TVDB ID isn't possible (caps doesn't
+  advertise it, so *arr sends text queries).
+- Interrupted downloads (restart, network outage, or **pause**) resume where they
+  left off via an HTTP Range request; a failed job can be restarted via SABnzbd
+  `mode=retry` (Retry in the UI History).
 
 ## Development
 

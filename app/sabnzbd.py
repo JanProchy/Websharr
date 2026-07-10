@@ -39,7 +39,7 @@ def _fmt_timeleft(job: Job) -> str:
 
 
 def _queue_slot(job: Job, index: int) -> dict:
-    status = "Downloading" if job.status == "downloading" else "Queued"
+    status = {"downloading": "Downloading", "paused": "Paused"}.get(job.status, "Queued")
     pct = int(job.downloaded * 100 / job.size) if job.size else 0
     return {
         "index": index,
@@ -180,7 +180,12 @@ async def sabnzbd_api(request: Request):
             )
             return JSONResponse({"status": ok})
         if params.get("name") in ("pause", "resume"):
-            return JSONResponse({"status": True})
+            action = manager.pause if params.get("name") == "pause" else manager.resume
+            value = params.get("value", "")
+            if value:  # per-job pause/resume (what the UI uses)
+                ok = all(action(nzo_id) for nzo_id in value.split(",") if nzo_id)
+                return JSONResponse({"status": ok})
+            return JSONResponse({"status": True})  # global pause/resume: no-op
         slots = [_queue_slot(j, i) for i, j in enumerate(manager.queue_jobs())]
         return JSONResponse({"queue": {
             "paused": False,

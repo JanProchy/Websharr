@@ -74,6 +74,10 @@
   .xbtn { background: none; border: none; color: var(--faint); font-size: 16px; line-height: 1;
     cursor: pointer; padding: 4px 6px; border-radius: 6px; flex-shrink: 0; }
   .xbtn:hover { color: var(--red); background: var(--red-soft); }
+  .ibtn { background: none; border: none; color: var(--muted); font-size: 14px; line-height: 1;
+    cursor: pointer; padding: 4px 6px; border-radius: 6px; flex-shrink: 0; }
+  .ibtn:hover { color: var(--accent); background: var(--accent-soft); }
+  .ibtn:disabled { opacity: .4; cursor: default; }
   .ghost { background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 7px;
     padding: 4px 12px; font-size: 13px; font-weight: 700; cursor: pointer; }
   .ghost:hover { color: #f8a49e; border-color: rgba(242,109,100,0.45); }
@@ -96,6 +100,8 @@
   .track { flex: 1; height: 6px; background: var(--inner); border-radius: 4px; overflow: hidden; }
   .bar { height: 100%; border-radius: 4px; background: var(--accent); transition: width 2s linear; }
   .bar.queued { background: var(--grey); }
+  .bar.paused { background: #f5c451; transition: none; }
+  .pill.paused { background: rgba(245,196,81,0.16); color: #f5c451; }
   .pct { font-size: 13px; font-weight: 800; width: 42px; text-align: right; }
   .speed { color: var(--muted); font-size: 13px; font-weight: 600; width: 82px; text-align: right; }
   .eta { color: var(--faint); font-size: 13px; font-weight: 600; width: 70px; text-align: right; }
@@ -646,6 +652,7 @@ const App = {
       let card = list.querySelector(`[data-id="${j.nzo_id}"]`);
       const pct = j.size ? Math.min(100, j.downloaded * 100 / j.size) : 0;
       const dl = j.status === "downloading";
+      const paused = j.status === "paused";
       if (!card) {
         card = document.createElement("div");
         card.className = "qcard";
@@ -656,6 +663,7 @@ const App = {
             <span class="qname"></span>
             <span class="chip"></span>
             <span class="size"></span>
+            <button class="ibtn pausebtn"></button>
             <button class="xbtn" title="Delete job">✕</button>
           </div>
           <div class="qrow2">
@@ -664,19 +672,24 @@ const App = {
           </div>
           <div class="cslot"></div>`;
         card.querySelector(".xbtn").onclick = () => { this.confirmId = j.nzo_id; this.refresh(); this.renderConfirms(); };
+        card.querySelector(".pausebtn").onclick = () => this.togglePause(j.nzo_id, card);
         list.appendChild(card);
       }
       card.querySelector(".pill").className = "pill " + j.status;
-      card.querySelector(".pill").textContent = dl ? "DOWNLOADING" : "QUEUED";
+      card.querySelector(".pill").textContent = paused ? "PAUSED" : dl ? "DOWNLOADING" : "QUEUED";
       card.querySelector(".qname").textContent = j.name;
       card.querySelector(".chip").textContent = catLabel(j.category);
       card.querySelector(".size").textContent = fmtSize(j.size);
+      const pbtn = card.querySelector(".pausebtn");
+      pbtn.textContent = paused ? "▶" : "⏸";
+      pbtn.title = paused ? "Resume" : "Pause";
       const bar = card.querySelector(".bar");
       bar.style.width = pct.toFixed(1) + "%";
       bar.classList.toggle("queued", !dl);
+      bar.classList.toggle("paused", paused);
       card.querySelector(".pct").textContent = Math.floor(pct) + "%";
       card.querySelector(".pct").style.color = dl ? "var(--text)" : "var(--faint)";
-      card.querySelector(".speed").textContent = dl ? fmtSpeed(j.speed) : "—";
+      card.querySelector(".speed").textContent = dl ? fmtSpeed(j.speed) : paused ? "paused" : "—";
       card.querySelector(".eta").textContent = fmtEta(j);
     }
     for (const card of [...list.children]) if (!seen.has(card.dataset.id)) card.remove();
@@ -700,6 +713,15 @@ const App = {
       slot.querySelector(".delf").onclick = () => this.deleteJob(id, true);
       slot.querySelector(".cancel").onclick = () => { this.confirmId = null; this.renderConfirms(); };
     }
+  },
+
+  async togglePause(id, card) {
+    const paused = card.querySelector(".pill").textContent === "PAUSED";
+    const btn = card.querySelector(".pausebtn");
+    btn.disabled = true;
+    await sab({ mode: "queue", name: paused ? "resume" : "pause", value: id }).catch(() => {});
+    btn.disabled = false;
+    this.refresh(true);
   },
 
   async deleteJob(id, delFiles) {

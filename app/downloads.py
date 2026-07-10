@@ -48,7 +48,7 @@ class Job:
     # and reported to Sonarr/Radarr, so import parses the episode even when the
     # raw Webshare filename lacks SxxExx. Falls back to the filename stem.
     title: str = ""
-    status: str = "queued"  # queued | downloading | completed | failed
+    status: str = "queued"  # queued | downloading | paused | completed | failed
     downloaded: int = 0
     speed: float = 0.0  # bytes/s, not persisted meaningfully
     error: str = ""
@@ -131,7 +131,33 @@ class DownloadManager:
         return self._jobs.get(nzo_id)
 
     def queue_jobs(self) -> list[Job]:
-        return [j for j in self._jobs.values() if j.status in ("queued", "downloading")]
+        return [j for j in self._jobs.values()
+                if j.status in ("queued", "downloading", "paused")]
+
+    def pause(self, nzo_id: str) -> bool:
+        """Stop an active/queued download but keep its partial file for resume."""
+        job = self._jobs.get(nzo_id)
+        if job is None or job.status not in ("queued", "downloading"):
+            return False
+        job.status = "paused"
+        job.speed = 0.0
+        task = self._tasks.pop(nzo_id, None)
+        if task is not None and not task.done():
+            task.cancel()  # CancelledError unwinds; status stays "paused"
+        self._save_state()
+        logger.info("Paused %s (%s)", nzo_id, job.name)
+        return True
+
+    def resume(self, nzo_id: str) -> bool:
+        """Re-queue a paused job; the worker continues from the partial file."""
+        job = self._jobs.get(nzo_id)
+        if job is None or job.status != "paused":
+            return False
+        job.status = "queued"
+        self._start(job)
+        self._save_state()
+        logger.info("Resumed %s (%s)", nzo_id, job.name)
+        return True
 
     def history_jobs(self) -> list[Job]:
         jobs = [j for j in self._jobs.values() if j.status in ("completed", "failed")]

@@ -3,6 +3,7 @@
 import http.server
 import json
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -46,6 +47,76 @@ def _serve(payload: bytes, support_range: bool):
     httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd, Handler
+
+
+def _serve_slow(payload: bytes, chunk: int = 8192, delay: float = 0.03):
+    """Throttled server (supports Range) so a download can be paused mid-flight."""
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            rng = self.headers.get("Range")
+            data = payload
+            if rng:
+                start = int(rng.removeprefix("bytes=").split("-")[0])
+                self.send_response(206)
+                self.send_header("Content-Range", f"bytes {start}-{len(data) - 1}/{len(data)}")
+                data = data[start:]
+            else:
+                self.send_response(200)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            for i in range(0, len(data), chunk):
+                try:
+                    self.wfile.write(data[i:i + chunk])
+                    self.wfile.flush()
+                    time.sleep(delay)
+                except (BrokenPipeError, ConnectionResetError):
+                    return
+
+        def log_message(self, *args):
+            pass
+
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return httpd
+
+
+def test_pause_resume(tmp_path, monkeypatch):
+    # Larger than CHUNK_SIZE (1 MiB) so the stream yields (and updates progress)
+    # several times mid-download, giving a window to pause.
+    payload = b"z" * (3 * 1024 * 1024)
+    httpd = _serve_slow(payload, chunk=65536, delay=0.03)
+    try:
+        url = f"http://127.0.0.1:{httpd.server_address[1]}/f.mkv"
+        with _start_app(tmp_path, monkeypatch, url) as client:
+            nzb = build_nzb("pz1", "Zaklinac.raw.mkv", len(payload))
+            nzo_id = client.post(
+                "/sabnzbd/api",
+                params={"mode": "addfile", "apikey": "testkey", "cat": "tv"},
+                files={"nzbfile": ("Zaklinac S01E01.nzb", nzb.encode(), "application/x-nzb")},
+            ).json()["nzo_ids"][0]
+            manager = app.state.downloads
+
+            # Wait until it is actively downloading (some bytes in), then pause.
+            assert wait_for(lambda: manager.get(nzo_id).status == "downloading"
+                            and manager.get(nzo_id).downloaded > 0)
+            ok = client.get("/sabnzbd/api", params={
+                "mode": "queue", "name": "pause", "value": nzo_id,
+                "apikey": "testkey"}).json()["status"]
+            assert ok is True
+            assert wait_for(lambda: manager.get(nzo_id).status == "paused")
+            job = manager.get(nzo_id)
+            assert 0 < job.downloaded < len(payload)  # partial, not finished
+            assert job in manager.queue_jobs()
+
+            client.get("/sabnzbd/api", params={
+                "mode": "queue", "name": "resume", "value": nzo_id, "apikey": "testkey"})
+            assert wait_for(lambda: manager.get(nzo_id).status == "completed", timeout=10)
+            job = manager.get(nzo_id)
+
+        assert (Path(job.storage) / "Zaklinac.raw.mkv").read_bytes() == payload
+    finally:
+        httpd.shutdown()
 
 
 def _seed_interrupted_job(tmp_path, partial: bytes) -> str:
