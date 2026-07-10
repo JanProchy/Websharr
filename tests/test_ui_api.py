@@ -67,17 +67,18 @@ def test_ui_search_returns_json(client, fake_webshare):
     assert "apikey=testkey" in results[0]["nzb_url"]
 
 
-def test_ui_search_ranks_relevance_above_size(client, fake_webshare):
-    """Webshare fulltext is fuzzy — a huge wrong episode must not outrank
-    the exact match, and diacritics must not matter."""
+def test_ui_search_filters_wrong_episode(client, fake_webshare):
+    """Webshare fulltext is OR-based and returns every episode; a search for a
+    specific episode must drop the others and rank the rest biggest-first."""
     fake_webshare.fuzzy = True
     fake_webshare.results = [
         SearchResult("wrong-ep", "Zaklínač.S04E02.2160p.mkv", 20_000_000_000),
         SearchResult("right-small", "Zaklinac.S01E03.720p.mkv", 700_000_000),
         SearchResult("right-big", "Zaklínač S01E03 1080p CZ.mkv", 3_000_000_000),
     ]
-    body = _ui(client, "search", q="zaklinac s01e03", t="search").json()
-    assert [r["ident"] for r in body["results"]] == ["right-big", "right-small", "wrong-ep"]
+    # Episode typed into the box is parsed out; only S01E03 files survive.
+    body = _ui(client, "search", q="zaklinac s01e03", t="tvsearch").json()
+    assert [r["ident"] for r in body["results"]] == ["right-big", "right-small"]
 
 
 def test_ui_fileinfo(client, fake_webshare):

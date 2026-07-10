@@ -177,6 +177,25 @@ def matches_query(query: str, name: str) -> bool:
     return ntoks[:len(tokens)] == tokens
 
 
+def file_episode(query: str, name: str) -> int | None:
+    """Episode number implied by the file name, read from the first marker
+    after the show title: SxxEyy, 1x05, or a bare "05". None if none found.
+
+    Webshare fulltext is OR-based, so a "Skvrna 05" query returns every Skvrna
+    episode; this lets the search keep only the episode actually asked for
+    instead of mislabeling "Skvrna 01 - Pohřeb" as S01E05.
+    """
+    series = _series_tokens(query)
+    toks = normalize_text(name).split()
+    for tk in toks[len(series):]:
+        m = re.match(r"^s\d{1,2}e(\d{1,3})$", tk) or re.match(r"^\d{1,2}x(\d{1,3})$", tk)
+        if m:
+            return int(m.group(1))
+        if tk.isdigit() and len(tk) <= 2:  # bare episode number (skip years/1080)
+            return int(tk)
+    return None
+
+
 def relevance(queries: list[str], name: str) -> float:
     """Best fraction of a query's tokens present in the file name."""
     ntoks = set(normalize_text(name).split())
@@ -270,6 +289,7 @@ async def torznab_api(request: Request):
     limit = min(int(params.get("limit", str(config.search_limit)) or config.search_limit), 100)
     offset = int(params.get("offset", "0") or 0)
 
+    want_ep = int(ep) if (t == "tvsearch" and ep and str(ep).isdigit()) else None
     client = request.app.state.webshare
     seen: set[str] = set()
     merged: list[SearchResult] = []
@@ -284,6 +304,8 @@ async def torznab_api(request: Request):
                 continue
             if not matches_query(q, r.name):
                 continue  # drop Webshare's loose non-matching fulltext hits
+            if want_ep is not None and file_episode(q, r.name) != want_ep:
+                continue  # OR-based fulltext returns every episode; keep the asked one
             seen.add(r.ident)
             merged.append(r)
 

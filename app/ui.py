@@ -28,6 +28,7 @@ from .settings import SESSION_TTL, hash_password, settings, verify_password
 from .torznab import (
     VIDEO_EXTENSIONS,
     build_queries,
+    file_episode,
     matches_query,
     parse_query,
     relevance,
@@ -331,6 +332,7 @@ async def ui_search(request: Request):
 
     limit = min(int(params.get("limit", str(config.search_limit)) or config.search_limit), 100)
 
+    want_ep = int(ep) if (t == "tvsearch" and ep and str(ep).isdigit()) else None
     client = request.app.state.webshare
     seen: set[str] = set()
     merged: list[SearchResult] = []
@@ -345,6 +347,8 @@ async def ui_search(request: Request):
                 continue
             if not matches_query(q, r.name):
                 continue  # drop Webshare's loose non-matching fulltext hits
+            if want_ep is not None and file_episode(q, r.name) != want_ep:
+                continue  # OR-based fulltext returns every episode; keep the asked one
             seen.add(r.ident)
             merged.append(r)
 

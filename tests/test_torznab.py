@@ -1,6 +1,12 @@
 import xml.etree.ElementTree as ET
 
-from app.torznab import build_queries, matches_query, parse_query, release_title
+from app.torznab import (
+    build_queries,
+    file_episode,
+    matches_query,
+    parse_query,
+    release_title,
+)
 from app.webshare import SearchResult
 
 TZNS = "{http://torznab.com/schemas/2015/feed}"
@@ -56,10 +62,20 @@ def test_matches_query_requires_name_to_start_with_title():
     assert not matches_query("House of the Dragon", "The Dragon Prince S01E05.mkv")
 
 
-def test_search_filters_garbage_results(client, fake_webshare):
+def test_file_episode():
+    assert file_episode("Skvrna", "Skvrna 05 - Bestie (Cajda).mp4") == 5
+    assert file_episode("Skvrna", "Skvrna 01 - Pohreb.mkv") == 1
+    assert file_episode("Zaklinac", "Zaklinac.S01E03.1080p.mkv") == 3
+    assert file_episode("Zaklinac", "Zaklinac 1x07 dabing.avi") == 7
+    # 1080/2160 must not be mistaken for an episode.
+    assert file_episode("Skvrna", "Skvrna - Bestie 1080p.mkv") is None
+
+
+def test_search_filters_garbage_and_wrong_episode(client, fake_webshare):
     fake_webshare.fuzzy = True  # Webshare returns everything, like real fulltext
     fake_webshare.results = [
         SearchResult("good", "Skvrna 05 - Bestie.mkv", 800_000_000),
+        SearchResult("otherep", "Skvrna 01 - Pohreb.mkv", 900_000_000),  # wrong episode
         SearchResult("wwe", "WWE.Monday.Night.Raw.S34E01.2160p.mkv", 5_000_000_000),
         SearchResult("planet", "Our.Planet.2019.S01E05.2160p.mkv", 4_000_000_000),
     ]
@@ -68,7 +84,7 @@ def test_search_filters_garbage_results(client, fake_webshare):
     })
     root = ET.fromstring(resp.content)
     titles = [i.findtext("title") for i in root.findall("channel/item")]
-    # Only the real Skvrna file survives; it is normalized to a parseable name.
+    # Garbage AND the wrong episode dropped; only the real S01E05 survives.
     assert titles == ["Skvrna S01E05 - Skvrna 05 - Bestie"]
 
 
