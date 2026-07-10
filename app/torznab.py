@@ -296,7 +296,9 @@ async def expand_titles(t: str, q: str, cat: str | None, *, tvdbid: str | None =
     original_language: the title's language name (from TMDB) used to tag the
     release feed, or "" when unknown; lets *arr apply an original-language policy.
     """
-    titles = [q] + alias_titles(q, settings.aliases)
+    # Aliases stay keyed on the *arr text query (interactive search); an ID-only
+    # automatic search has no q, so we lean on the TMDB id lookup below instead.
+    titles = ([q] if q and q.strip() else []) + alias_titles(q, settings.aliases)
     display = q
     language = ""
     if settings.tmdb_token:
@@ -308,9 +310,15 @@ async def expand_titles(t: str, q: str, cat: str | None, *, tvdbid: str | None =
             res = await tmdb_lookup(settings.tmdb_token, kind, q)
         if res:
             disp, orig, lang = res
+            seen = {normalize_text(x) for x in titles}
             if disp:
                 display = disp  # prefix releases with the canonical title
-            if orig and normalize_text(orig) not in {normalize_text(x) for x in titles}:
+                # Also search under it — for a CZ-origin show the canonical name
+                # *is* the Czech one, and an ID-only search has no other term.
+                if normalize_text(disp) not in seen:
+                    titles.append(disp)
+                    seen.add(normalize_text(disp))
+            if orig and normalize_text(orig) not in seen:
                 titles.append(orig)
             language = lang_name(lang)
     return titles, display, language

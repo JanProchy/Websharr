@@ -85,38 +85,60 @@ async def lookup(token: str, kind: str, query: str) -> tuple[str, str, str] | No
     return found
 
 
+def _imdb_id(imdbid) -> str:
+    """TMDB's /find expects the tt-prefixed IMDb id; Sonarr often sends it bare."""
+    if not imdbid:
+        return ""
+    s = str(imdbid).strip()
+    if not s:
+        return ""
+    return s if s.lower().startswith("tt") else "tt" + s
+
+
 async def lookup_by_id(token: str, kind: str, tmdbid=None, imdbid=None,
                        tvdbid=None) -> tuple[str, str, str] | None:
-    """(display, original, language) from an exact external id (tmdb/imdb/tvdb)."""
+    """(display, original, language) from an exact external id.
+
+    Tries each supplied id in turn — direct TMDB id, then TVDB, then IMDb — and
+    uses the first that resolves, so a Sonarr search carrying both tvdbid and
+    imdbid still works if one source has no TMDB mapping.
+    """
     if not token or kind not in ("tv", "movie"):
         return None
-    ext = tmdbid or imdbid or tvdbid
-    if not ext:
+    imdb = _imdb_id(imdbid)
+    if not (tmdbid or imdb or tvdbid):
         return None
-    key = (kind, f"id:{ext}")
+    key = (kind, f"id:{tmdbid}:{tvdbid}:{imdb}")
     if key in _cache:
         return _cache[key]
+
+    async def _find(client, ext, source):
+        r = await client.get(f"{_BASE}/find/{ext}", params={"external_source": source})
+        if r.status_code != 200:
+            return {}
+        hits = r.json().get(f"{kind}_results") or []
+        return hits[0] if hits else {}
+
+    entry: dict = {}
     try:
         async with httpx.AsyncClient(timeout=10.0, headers=_headers(token)) as client:
             if tmdbid:
                 r = await client.get(f"{_BASE}/{kind}/{tmdbid}")
-                r.raise_for_status()
-                entry = r.json()
-            else:
-                source = "imdb_id" if imdbid else "tvdb_id"
-                r = await client.get(f"{_BASE}/find/{ext}",
-                                     params={"external_source": source})
-                r.raise_for_status()
-                hits = r.json().get(f"{kind}_results") or []
-                entry = hits[0] if hits else {}
+                if r.status_code == 200:
+                    entry = r.json()
+            if not entry and tvdbid:
+                entry = await _find(client, tvdbid, "tvdb_id")
+            if not entry and imdb:
+                entry = await _find(client, imdb, "imdb_id")
     except (httpx.HTTPError, KeyError, ValueError) as exc:
-        logger.warning("TMDB id lookup %s=%s failed: %s", kind, ext, exc)
+        logger.warning("TMDB id lookup %s (tmdb=%s tvdb=%s imdb=%s) failed: %s",
+                       kind, tmdbid, tvdbid, imdb, exc)
         return None
     disp, orig = _titles(entry, kind) if entry else ("", "")
     lang = _language(entry) if entry else ""
     found = (disp, orig, lang) if (disp or orig or lang) else None
     _cache[key] = found
     if found:
-        logger.info("TMDB: %s id=%s -> display=%r original=%r lang=%r",
-                    kind, ext, disp, orig, lang)
+        logger.info("TMDB: %s id(tmdb=%s tvdb=%s imdb=%s) -> display=%r original=%r lang=%r",
+                    kind, tmdbid, tvdbid, imdb, disp, orig, lang)
     return found

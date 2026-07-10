@@ -108,6 +108,37 @@ def test_expand_titles_uses_tmdb(monkeypatch):
     assert asyncio.run(torznab.expand_titles("tvsearch", "Sleepers", "5000")) == (["Sleepers"], "Sleepers", "")
 
 
+def test_expand_titles_id_only_uses_canonical(monkeypatch):
+    """An automatic ID search carries no q; the canonical (here Czech) title from
+    the TMDB id lookup must still become the search term, with no empty query."""
+    import asyncio
+    from app import torznab
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "tok")
+
+    async def by_id(token, kind, tmdbid=None, imdbid=None, tvdbid=None):
+        # CZ-origin show: name == original_name, so original comes back empty.
+        return ("Devadesátky", "", "cs") if tvdbid == "414489" else None
+
+    async def by_name(token, kind, q):
+        return None
+
+    monkeypatch.setattr(torznab, "tmdb_lookup_by_id", by_id)
+    monkeypatch.setattr(torznab, "tmdb_lookup", by_name)
+    titles, display, language = asyncio.run(
+        torznab.expand_titles("tvsearch", "", "5000", tvdbid="414489", imdbid="16532444"))
+    assert titles == ["Devadesátky"]        # canonical name searched, no empty string
+    assert display == "Devadesátky" and language == "Czech"
+
+
+def test_imdb_id_normalisation():
+    from app.tmdb import _imdb_id
+    assert _imdb_id("16532444") == "tt16532444"
+    assert _imdb_id("tt16532444") == "tt16532444"
+    assert _imdb_id("") == "" and _imdb_id(None) == ""
+
+
 def test_dub_language_and_lang_name():
     from app.torznab import dub_language, lang_name
     assert dub_language("Bez.vedomi.S01E01.CZ.Dabing.1080p.mkv") == "Czech"
