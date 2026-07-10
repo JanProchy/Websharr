@@ -9,6 +9,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
 
 from . import __version__
 from . import applog
@@ -76,6 +77,12 @@ app.include_router(ui_router)
 
 
 @app.get("/")
+async def root():
+    # The web UI lives at /ui; send the bare domain there.
+    return RedirectResponse(url="/ui")
+
+
+@app.get("/status")
 async def status():
     manager: DownloadManager = app.state.downloads
     return {
