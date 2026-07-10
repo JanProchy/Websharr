@@ -4,7 +4,7 @@
 
 A bridge between **Webshare.cz** (premium account) and the ***arr stack** (Sonarr/Radarr). A single container that acts as:
 
-- a **Torznab indexer** (`/torznab/api`) — translates Sonarr/Radarr queries into Webshare searches and returns the results as a release feed,
+- a **Newznab indexer** (`/torznab/api`) — translates Sonarr/Radarr queries into Webshare searches and returns the results as a release feed,
 - a **SABnzbd download client** (`/sabnzbd/api`) — accepts a grab, downloads the file through your premium account into a folder, and lets *arr import it as usual.
 
 Flow: request in Jellyseerr → Sonarr/Radarr searches via Websharr → grab → Websharr downloads from Webshare → *arr imports and renames into your library.
@@ -74,7 +74,7 @@ Also works through Prowlarr as a **Generic Newznab** indexer.
 | Variable | Default | Meaning |
 |---|---|---|
 | `WEBSHARE_USERNAME` / `WEBSHARE_PASSWORD` | — | Webshare.cz credentials (initial default; editable in the UI) |
-| `WEBSHARR_API_KEY` | auto-generated | API key for the Torznab/SABnzbd endpoints; set to pin a fixed value |
+| `WEBSHARR_API_KEY` | auto-generated | API key for the Newznab/SABnzbd endpoints; set to pin a fixed value |
 | `SETTINGS_FILE` | `/config/settings.json` | persisted settings (UI account, Webshare login, API key) |
 | `COMPLETE_DIR` | `/downloads/complete` | finished downloads (`<cat>/<name>/file`) |
 | `INCOMPLETE_DIR` | `/downloads/incomplete` | in-progress files |
