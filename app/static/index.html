@@ -286,9 +286,9 @@
     <form id="search-form" onsubmit="App.search();return false">
       <input id="q" placeholder="Release name, e.g. Zaklinac S01E05" autocomplete="off">
       <select id="qtype" onchange="App.typeChanged()">
-        <option value="search">search</option>
-        <option value="tvsearch" selected>tvsearch</option>
-        <option value="movie">movie</option>
+        <option value="search">any</option>
+        <option value="tvsearch" selected>shows</option>
+        <option value="movie">movies</option>
       </select>
       <input id="season" type="number" min="0" placeholder="Season">
       <input id="ep" type="number" min="0" placeholder="Episode">
@@ -504,6 +504,18 @@ function fmtDur(sec) {
 function clockTime(ts) {
   return new Date(ts * 1000).toLocaleTimeString([], { hour12: false });
 }
+// Friendly label for the internal category values Sonarr/SABnzbd use.
+function catLabel(c) { return c === "*" ? "other" : c === "tv" ? "shows" : c; }
+// Best-effort episode number from a filename ("Skvrna 05 - Bestie" -> "5"),
+// falling back to a trailing number in the search query. Skips 3-4 digit
+// tokens so resolutions (720/1080/2160) and years aren't mistaken for episodes.
+function guessEpisode(name, query) {
+  const stem = String(name || "").replace(/\.[^.]+$/, "");
+  const fm = stem.match(/(?:^|\D)(\d{1,2})(?!\d)/);
+  if (fm) return String(parseInt(fm[1], 10));
+  const qm = String(query || "").match(/\b(\d{1,2})\s*$/);
+  return qm ? String(parseInt(qm[1], 10)) : "";
+}
 
 async function ui(path, params = {}) {
   const qs = new URLSearchParams({ apikey: API_KEY, ...params });
@@ -657,7 +669,7 @@ const App = {
       card.querySelector(".pill").className = "pill " + j.status;
       card.querySelector(".pill").textContent = dl ? "DOWNLOADING" : "QUEUED";
       card.querySelector(".qname").textContent = j.name;
-      card.querySelector(".chip").textContent = j.category === "*" ? "other" : j.category;
+      card.querySelector(".chip").textContent = catLabel(j.category);
       card.querySelector(".size").textContent = fmtSize(j.size);
       const bar = card.querySelector(".bar");
       bar.style.width = pct.toFixed(1) + "%";
@@ -713,7 +725,7 @@ const App = {
           ${failed ? `<span class="herr">${esc(j.error)}</span>`
                    : `<span class="hpath">${esc(j.storage)}</span>`}
         </div>
-        <span class="chip">${esc(j.category === "*" ? "other" : j.category)}</span>
+        <span class="chip">${esc(catLabel(j.category))}</span>
         <span class="size">${fmtSize(j.size)}</span>
         <span class="htime" title="${new Date(j.completed_ts * 1000).toLocaleString()}">${relTime(j.completed_ts)}</span>
         <div class="hactions">
@@ -843,13 +855,13 @@ const App = {
     const isMovie = this.lastSearch.t === "movie";
     const q = esc(this.lastSearch.q);
     const season = ($("season") && $("season").value) || "1";
-    const ep = ($("ep") && $("ep").value) || "";
+    const ep = ($("ep") && $("ep").value) || guessEpisode(r.name, this.lastSearch.q);
     slot.innerHTML = `
       <div class="gform">
         <span class="ghdr">This file has no season/episode in its name — tell Sonarr/Radarr what it is:</span>
         <div class="gtype">
-          <button class="gt ${isMovie ? "" : "active"}" data-gt="tv">TV</button>
-          <button class="gt ${isMovie ? "active" : ""}" data-gt="movie">Movie</button>
+          <button class="gt ${isMovie ? "" : "active"}" data-gt="tv">Shows</button>
+          <button class="gt ${isMovie ? "active" : ""}" data-gt="movie">Movies</button>
         </div>
         <div class="gfields tv" ${isMovie ? 'style="display:none"' : ""}>
           <input class="g-series" placeholder="Series" value="${q}">
