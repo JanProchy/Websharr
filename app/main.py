@@ -1,8 +1,8 @@
 """Websharr — Webshare.cz bridge for the *arr stack.
 
-Exposes a Torznab indexer (/torznab/api) and a SABnzbd-compatible download
-client (/sabnzbd/api) so Sonarr/Radarr can search and download from a
-Webshare.cz premium account.
+Exposes a Torznab indexer (/torznab/api), a SABnzbd-compatible download
+client (/sabnzbd/api) and a monitoring web UI (/ui) so Sonarr/Radarr can
+search and download from a Webshare.cz premium account.
 """
 
 import logging
@@ -15,6 +15,7 @@ from .config import config
 from .downloads import DownloadManager
 from .sabnzbd import router as sabnzbd_router
 from .torznab import router as torznab_router
+from .ui import router as ui_router
 from .webshare import WebshareClient
 
 logging.basicConfig(
@@ -48,6 +49,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Websharr", version=__version__, lifespan=lifespan)
 app.include_router(torznab_router)
 app.include_router(sabnzbd_router)
+app.include_router(ui_router)
 
 
 @app.get("/")

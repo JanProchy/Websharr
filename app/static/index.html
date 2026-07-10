@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Websharr</title>
+<link rel="icon" href="/ui/assets/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0e2638; --panel: #0a1c2a; --inner: #071320;
+    --border: #1c3a52; --border-soft: #12293c;
+    --text: #f2f7fb; --muted: #8ba7bd; --faint: #5f7a90;
+    --accent: #4db6f5; --accent-soft: rgba(77,182,245,0.12);
+    --green: #45d483; --red: #f26d64; --red-soft: rgba(242,109,100,0.1);
+    --grey: #8296a7;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font: 13px/1.45 'Nunito', sans-serif; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { color: #7ecbf8; text-decoration: underline; }
+  input, select, button { font-family: inherit; font-size: 13px; }
+  input::placeholder { color: var(--faint); }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.35; } }
+
+  /* banner */
+  #offline { display: none; align-items: center; gap: 10px; padding: 9px 20px;
+    background: rgba(242,109,100,0.14); border-bottom: 1px solid rgba(242,109,100,0.35);
+    color: #f8a49e; font-size: 12.5px; font-weight: 700; }
+  #offline.show { display: flex; }
+  #offline .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red);
+    animation: pulse 1.2s ease-in-out infinite; }
+  #offline button { margin-left: auto; background: none; border: 1px solid rgba(242,109,100,0.5);
+    color: #f8a49e; border-radius: 7px; padding: 3px 12px; font-weight: 700; cursor: pointer; font-size: 12px; }
+
+  /* header */
+  header { display: flex; align-items: center; gap: 16px; height: 58px; padding: 0 20px;
+    background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 10; }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand img { width: 30px; height: 30px; border-radius: 7px; display: block; }
+  .brand span { font-weight: 800; font-size: 17px; letter-spacing: .2px; }
+  nav { display: flex; gap: 2px; margin-left: 14px; }
+  nav button { display: flex; align-items: center; gap: 7px; background: none; border: none;
+    color: var(--muted); font-weight: 700; font-size: 13.5px; padding: 7px 14px; border-radius: 8px; cursor: pointer; }
+  nav button:hover { color: var(--text); }
+  nav button.active { background: var(--accent-soft); color: var(--text); }
+  nav .count { background: rgba(77,182,245,0.18); color: var(--accent); border-radius: 20px;
+    padding: 0 7px; font-size: 11px; font-weight: 800; line-height: 17px; }
+  .spacer { flex: 1; }
+  .version { color: var(--faint); font-size: 12px; font-weight: 600; }
+  .user { display: flex; align-items: center; gap: 7px; background: var(--inner);
+    border: 1px solid var(--border); border-radius: 20px; padding: 5px 12px 5px 10px; }
+  .user .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+  .user.off .dot { background: var(--red); }
+  .user span { font-size: 12px; font-weight: 700; color: var(--muted); }
+
+  main { max-width: 1060px; margin: 0 auto; padding: 22px 20px 48px; }
+  .view { display: none; }
+  .view.active { display: block; }
+  .viewhead { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
+  .viewhead h2 { font-size: 15px; font-weight: 800; margin: 0; }
+  .viewhead .sub { color: var(--muted); font-size: 12.5px; font-weight: 600; }
+
+  /* shared bits */
+  .chip { background: rgba(77,182,245,0.1); color: #7ecbf8; font-size: 10px; font-weight: 800;
+    letter-spacing: .6px; text-transform: uppercase; border-radius: 5px; padding: 3px 8px; flex-shrink: 0; }
+  .pill { font-size: 10px; font-weight: 800; letter-spacing: .7px; border-radius: 5px; padding: 3px 8px; flex-shrink: 0; }
+  .pill.downloading { background: rgba(77,182,245,0.14); color: var(--accent); }
+  .pill.queued { background: rgba(130,150,167,0.14); color: var(--grey); }
+  .size { color: var(--muted); font-size: 12.5px; font-weight: 600; width: 66px; text-align: right; flex-shrink: 0; }
+  .xbtn { background: none; border: none; color: var(--faint); font-size: 15px; line-height: 1;
+    cursor: pointer; padding: 4px 6px; border-radius: 6px; flex-shrink: 0; }
+  .xbtn:hover { color: var(--red); background: var(--red-soft); }
+  .ghost { background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 7px;
+    padding: 4px 12px; font-size: 12px; font-weight: 700; cursor: pointer; }
+  .ghost:hover { color: #f8a49e; border-color: rgba(242,109,100,0.45); }
+  .accentbtn { background: var(--accent-soft); border: 1px solid rgba(77,182,245,0.4); color: var(--accent);
+    border-radius: 7px; padding: 3px 12px; font-size: 12px; font-weight: 700; cursor: pointer; }
+  .accentbtn:hover { background: rgba(77,182,245,0.22); }
+  .empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 64px 24px;
+    background: var(--panel); border: 1px dashed var(--border); border-radius: 12px; text-align: center; }
+  .empty img { width: 46px; height: 46px; border-radius: 10px; opacity: .4; margin-bottom: 8px; }
+  .empty .t { font-size: 14.5px; font-weight: 800; color: #c7d8e5; }
+  .empty .s { color: var(--muted); font-size: 12.5px; max-width: 420px; line-height: 1.55; }
+
+  /* queue */
+  #queue-list { display: flex; flex-direction: column; gap: 8px; }
+  .qcard { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 11px 14px; }
+  .qrow1 { display: flex; align-items: center; gap: 10px; }
+  .qname { font-weight: 700; font-size: 13.5px; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; flex: 1; min-width: 0; }
+  .qrow2 { display: flex; align-items: center; gap: 12px; margin-top: 9px; }
+  .track { flex: 1; height: 6px; background: var(--inner); border-radius: 4px; overflow: hidden; }
+  .bar { height: 100%; border-radius: 4px; background: var(--accent); transition: width 2s linear; }
+  .bar.queued { background: var(--grey); }
+  .pct { font-size: 12px; font-weight: 800; width: 42px; text-align: right; }
+  .speed { color: var(--muted); font-size: 12px; font-weight: 600; width: 82px; text-align: right; }
+  .eta { color: var(--faint); font-size: 12px; font-weight: 600; width: 70px; text-align: right; }
+  .confirm { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 8px 10px;
+    background: rgba(242,109,100,0.08); border: 1px solid rgba(242,109,100,0.3); border-radius: 8px; }
+  .confirm .q { color: #f8a49e; font-size: 12.5px; font-weight: 700; flex: 1; }
+  .confirm .del { background: rgba(242,109,100,0.15); border: 1px solid rgba(242,109,100,0.45);
+    color: #f8a49e; border-radius: 7px; padding: 4px 12px; font-size: 12px; font-weight: 700; cursor: pointer; }
+  .confirm .delf { background: var(--red); border: 1px solid var(--red); color: var(--bg);
+    border-radius: 7px; padding: 4px 12px; font-size: 12px; font-weight: 800; cursor: pointer; }
+  .confirm .cancel { background: none; border: 1px solid var(--border); color: var(--muted);
+    border-radius: 7px; padding: 4px 12px; font-size: 12px; font-weight: 700; cursor: pointer; }
+
+  /* history */
+  .table { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .hrow { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--border-soft); }
+  .hrow:last-child { border-bottom: none; }
+  .hrow:hover { background: #0d2334; }
+  .hdot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .hmain { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .hname { font-weight: 700; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .herr { color: #f8a49e; font-size: 11.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hpath { color: var(--faint); font-size: 11px; font-family: 'JetBrains Mono', monospace;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .htime { color: var(--faint); font-size: 12px; font-weight: 600; width: 92px; text-align: right; flex-shrink: 0; }
+  .hactions { display: flex; align-items: center; gap: 4px; width: 96px; justify-content: flex-end; flex-shrink: 0; }
+
+  /* search */
+  #search-form { display: flex; gap: 8px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px; }
+  #search-form input, #search-form select { background: var(--inner); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 12px; color: var(--text); font-weight: 600; outline: none; }
+  #search-form input:focus { border-color: var(--accent); }
+  #q { flex: 1; }
+  #qtype { width: 120px; padding: 8px 10px; cursor: pointer; }
+  #season, #ep { width: 84px; padding: 8px 10px; }
+  #search-form button { background: var(--accent); border: none; color: #06202f; border-radius: 8px;
+    padding: 8px 20px; font-weight: 800; cursor: pointer; }
+  #search-form button:hover { background: #7ecbf8; }
+  #search-status { margin-top: 14px; padding: 32px; text-align: center; color: var(--muted);
+    font-size: 12.5px; font-weight: 700; animation: pulse 1.2s ease-in-out infinite; display: none; }
+  .thead { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid var(--border);
+    color: var(--faint); font-size: 10.5px; font-weight: 800; letter-spacing: .8px; text-transform: uppercase; }
+  .rrow { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid var(--border-soft); }
+  .rrow:last-child { border-bottom: none; }
+  .rrow:hover { background: #0d2334; }
+  .rtitle { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rsize { color: var(--muted); font-size: 12.5px; font-weight: 600; width: 74px; text-align: right; flex-shrink: 0; }
+  .rgrab { width: 96px; display: flex; justify-content: flex-end; flex-shrink: 0; }
+  .grabbed { color: var(--green); font-size: 12px; font-weight: 800; }
+</style>
+</head>
+<body>
+
+<div id="offline">
+  <span class="dot"></span>
+  <span>Websharr service unreachable — retrying every 2&nbsp;s…</span>
+  <button onclick="App.refresh(true)">Retry now</button>
+</div>
+
+<header>
+  <div class="brand">
+    <img src="/ui/assets/logo.svg" alt="">
+    <span>Websharr</span>
+  </div>
+  <nav>
+    <button id="tab-queue" onclick="App.show('queue')">Queue <span class="count" id="queue-count">0</span></button>
+    <button id="tab-history" onclick="App.show('history')">History</button>
+    <button id="tab-search" onclick="App.show('search')">Search</button>
+  </nav>
+  <div class="spacer"></div>
+  <span class="version">v__WEBSHARR_VERSION__</span>
+  <div class="user" id="user-chip"><span class="dot"></span><span id="user-name">—</span></div>
+</header>
+
+<main>
+  <section class="view active" id="view-queue">
+    <div class="viewhead"><h2>Queue</h2><span class="sub" id="queue-summary"></span></div>
+    <div class="empty" id="queue-empty" style="display:none">
+      <img src="/ui/assets/logo.svg" alt="">
+      <span class="t">Queue is empty</span>
+      <span class="s">Grabs from Sonarr and Radarr land here automatically. You can also grab
+        something manually from the <a href="#" onclick="App.show('search');return false">Search</a> tab.</span>
+    </div>
+    <div id="queue-list"></div>
+  </section>
+
+  <section class="view" id="view-history">
+    <div class="viewhead">
+      <h2>History</h2><span class="sub" id="history-summary"></span>
+      <div class="spacer"></div>
+      <span id="clear-wrap"><button class="ghost" onclick="App.askClear()">Clear all</button></span>
+    </div>
+    <div class="empty" id="history-empty" style="display:none">
+      <span class="s">Completed and failed downloads will appear here.</span>
+    </div>
+    <div class="table" id="history-list"></div>
+  </section>
+
+  <section class="view" id="view-search">
+    <div class="viewhead"><h2>Search</h2>
+      <span class="sub">Runs the same query Sonarr or Radarr would — results come straight from Webshare.</span></div>
+    <form id="search-form" onsubmit="App.search();return false">
+      <input id="q" placeholder="Release name, e.g. Zaklinac S01E05" autocomplete="off">
+      <select id="qtype" onchange="App.typeChanged()">
+        <option value="search">search</option>
+        <option value="tvsearch" selected>tvsearch</option>
+        <option value="movie">movie</option>
+      </select>
+      <input id="season" type="number" min="0" placeholder="Season">
+      <input id="ep" type="number" min="0" placeholder="Episode">
+      <button type="submit">Search</button>
+    </form>
+    <div id="search-status">Searching Webshare…</div>
+    <div id="search-results"></div>
+  </section>
+</main>
+
+<script>
+"use strict";
+const API_KEY = "__WEBSHARR_API_KEY__";
+const $ = (id) => document.getElementById(id);
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+function fmtSize(b) {
+  if (!b) return "—";
+  const gb = b / 1024 ** 3;
+  return gb >= 1 ? gb.toFixed(1) + " GB" : (b / 1024 ** 2).toFixed(0) + " MB";
+}
+function fmtSpeed(bps) { return bps ? (bps / 1024 ** 2).toFixed(1) + " MB/s" : "—"; }
+function fmtEta(j) {
+  if (j.status !== "downloading" || !j.speed || !j.size) return "—";
+  let s = Math.max(0, Math.round((j.size - j.downloaded) / j.speed));
+  const h = s / 3600 | 0, m = s % 3600 / 60 | 0;
+  if (h) return h + "h " + m + "m";
+  if (m) return m + "m " + String(s % 60).padStart(2, "0") + "s";
+  return s % 60 + "s";
+}
+function relTime(ts) {
+  const d = Math.max(0, Date.now() / 1000 - ts);
+  if (d < 50) return "just now";
+  if (d < 3600) return Math.round(d / 60) + " min ago";
+  if (d < 86400) return Math.round(d / 3600) + " h ago";
+  return Math.round(d / 86400) + " d ago";
+}
+
+async function ui(path, params = {}) {
+  const qs = new URLSearchParams({ apikey: API_KEY, ...params });
+  const resp = await fetch(`/ui/api/${path}?${qs}`);
+  if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).error || resp.statusText);
+  return resp.json();
+}
+async function sab(params, post = false) {
+  const qs = new URLSearchParams({ apikey: API_KEY, output: "json", ...params });
+  const resp = await fetch(`/sabnzbd/api?${qs}`, post ? { method: "POST" } : undefined);
+  if (!resp.ok) throw new Error("SABnzbd API error " + resp.status);
+  return resp.json();
+}
+
+const App = {
+  tab: "queue",
+  confirmId: null,
+  clearAsked: false,
+  offline: false,
+  grabbed: new Set(),
+  lastSearch: null,
+
+  show(tab) {
+    this.tab = tab;
+    for (const t of ["queue", "history", "search"]) {
+      $("tab-" + t).classList.toggle("active", t === tab);
+      $("view-" + t).classList.toggle("active", t === tab);
+    }
+    this.refresh(true);
+  },
+
+  typeChanged() {
+    const tv = $("qtype").value === "tvsearch";
+    $("season").style.display = tv ? "" : "none";
+    $("ep").style.display = tv ? "" : "none";
+  },
+
+  setOffline(off) {
+    this.offline = off;
+    $("offline").classList.toggle("show", off);
+    $("user-chip").classList.toggle("off", off);
+  },
+
+  async refresh(force = false) {
+    try {
+      const [status, queue, history] = await Promise.all([
+        ui("status"), ui("queue"), ui("history"),
+      ]);
+      this.setOffline(false);
+      $("user-name").textContent = status.webshare_user || "not configured";
+      $("queue-count").textContent = queue.jobs.length;
+      this.renderQueue(queue.jobs);
+      this.renderHistory(history.jobs);
+    } catch (e) {
+      this.setOffline(true);
+    }
+  },
+
+  renderQueue(jobs) {
+    $("queue-empty").style.display = jobs.length ? "none" : "";
+    const dl = jobs.filter((j) => j.status === "downloading");
+    const speed = dl.reduce((a, j) => a + j.speed, 0);
+    $("queue-summary").textContent = jobs.length
+      ? `${dl.length} downloading · ${jobs.length - dl.length} queued · ${fmtSpeed(speed)} total`
+      : "nothing downloading";
+
+    const list = $("queue-list");
+    const seen = new Set();
+    for (const j of jobs) {
+      seen.add(j.nzo_id);
+      let card = list.querySelector(`[data-id="${j.nzo_id}"]`);
+      const pct = j.size ? Math.min(100, j.downloaded * 100 / j.size) : 0;
+      const dl = j.status === "downloading";
+      if (!card) {
+        card = document.createElement("div");
+        card.className = "qcard";
+        card.dataset.id = j.nzo_id;
+        card.innerHTML = `
+          <div class="qrow1">
+            <span class="pill"></span>
+            <span class="qname"></span>
+            <span class="chip"></span>
+            <span class="size"></span>
+            <button class="xbtn" title="Delete job">✕</button>
+          </div>
+          <div class="qrow2">
+            <div class="track"><div class="bar" style="width:0%"></div></div>
+            <span class="pct"></span><span class="speed"></span><span class="eta"></span>
+          </div>
+          <div class="cslot"></div>`;
+        card.querySelector(".xbtn").onclick = () => { this.confirmId = j.nzo_id; this.refresh(); this.renderConfirms(); };
+        list.appendChild(card);
+      }
+      card.querySelector(".pill").className = "pill " + j.status;
+      card.querySelector(".pill").textContent = dl ? "DOWNLOADING" : "QUEUED";
+      card.querySelector(".qname").textContent = j.name;
+      card.querySelector(".chip").textContent = j.category === "*" ? "other" : j.category;
+      card.querySelector(".size").textContent = fmtSize(j.size);
+      const bar = card.querySelector(".bar");
+      bar.style.width = pct.toFixed(1) + "%";
+      bar.classList.toggle("queued", !dl);
+      card.querySelector(".pct").textContent = Math.floor(pct) + "%";
+      card.querySelector(".pct").style.color = dl ? "var(--text)" : "var(--faint)";
+      card.querySelector(".speed").textContent = dl ? fmtSpeed(j.speed) : "—";
+      card.querySelector(".eta").textContent = fmtEta(j);
+    }
+    for (const card of [...list.children]) if (!seen.has(card.dataset.id)) card.remove();
+    this.renderConfirms();
+  },
+
+  renderConfirms() {
+    for (const card of $("queue-list").children) {
+      const slot = card.querySelector(".cslot");
+      const id = card.dataset.id;
+      if (id !== this.confirmId) { slot.innerHTML = ""; continue; }
+      if (slot.firstChild) continue;
+      slot.innerHTML = `
+        <div class="confirm">
+          <span class="q">Delete this job?</span>
+          <button class="del">Delete</button>
+          <button class="delf">Delete + files</button>
+          <button class="cancel">Cancel</button>
+        </div>`;
+      slot.querySelector(".del").onclick = () => this.deleteJob(id, false);
+      slot.querySelector(".delf").onclick = () => this.deleteJob(id, true);
+      slot.querySelector(".cancel").onclick = () => { this.confirmId = null; this.renderConfirms(); };
+    }
+  },
+
+  async deleteJob(id, delFiles) {
+    this.confirmId = null;
+    await sab({ mode: "queue", name: "delete", value: id, del_files: delFiles ? "1" : "0" }).catch(() => {});
+    this.refresh(true);
+  },
+
+  renderHistory(jobs) {
+    $("history-empty").style.display = jobs.length ? "none" : "";
+    $("history-list").style.display = jobs.length ? "" : "none";
+    const ok = jobs.filter((j) => j.status === "completed").length;
+    $("history-summary").textContent = jobs.length
+      ? `${ok} completed · ${jobs.length - ok} failed` : "empty";
+
+    $("history-list").innerHTML = jobs.map((j) => {
+      const failed = j.status === "failed";
+      return `
+      <div class="hrow" data-id="${esc(j.nzo_id)}">
+        <span class="hdot" style="background:${failed ? "var(--red)" : "var(--green)"}"></span>
+        <div class="hmain">
+          <span class="hname">${esc(j.name)}</span>
+          ${failed ? `<span class="herr">${esc(j.error)}</span>`
+                   : `<span class="hpath">${esc(j.storage)}</span>`}
+        </div>
+        <span class="chip">${esc(j.category === "*" ? "other" : j.category)}</span>
+        <span class="size">${fmtSize(j.size)}</span>
+        <span class="htime" title="${new Date(j.completed_ts * 1000).toLocaleString()}">${relTime(j.completed_ts)}</span>
+        <div class="hactions">
+          ${failed ? `<button class="accentbtn" data-act="retry">Retry</button>` : ""}
+          <button class="xbtn" data-act="del" title="Delete from history">✕</button>
+        </div>
+      </div>`;
+    }).join("");
+
+    for (const row of $("history-list").children) {
+      const id = row.dataset.id;
+      row.querySelector('[data-act="del"]').onclick = async () => {
+        await sab({ mode: "history", name: "delete", value: id }).catch(() => {});
+        this.refresh(true);
+      };
+      const retry = row.querySelector('[data-act="retry"]');
+      if (retry) retry.onclick = async () => {
+        await sab({ mode: "retry", value: id }).catch(() => {});
+        this.show("queue");
+      };
+    }
+  },
+
+  askClear() {
+    $("clear-wrap").innerHTML = `
+      <span style="color:#f8a49e;font-size:12.5px;font-weight:700;margin-right:6px">Delete all history?</span>
+      <button class="confirm-yes" style="background:var(--red);border:none;color:var(--bg);border-radius:7px;padding:4px 12px;font-size:12px;font-weight:800;cursor:pointer">Clear all</button>
+      <button class="cancel ghost">Cancel</button>`;
+    $("clear-wrap").querySelector(".confirm-yes").onclick = async () => {
+      await sab({ mode: "history", name: "delete", value: "all" }).catch(() => {});
+      this.resetClear(); this.refresh(true);
+    };
+    $("clear-wrap").querySelector(".cancel").onclick = () => this.resetClear();
+  },
+  resetClear() {
+    $("clear-wrap").innerHTML = `<button class="ghost">Clear all</button>`;
+    $("clear-wrap").querySelector("button").onclick = () => this.askClear();
+  },
+
+  async search() {
+    const q = $("q").value.trim();
+    if (!q) return;
+    const t = $("qtype").value;
+    const params = { q, t };
+    if (t === "tvsearch") {
+      if ($("season").value) params.season = $("season").value;
+      if ($("ep").value) params.ep = $("ep").value;
+    }
+    $("search-results").innerHTML = "";
+    $("search-status").style.display = "";
+    this.grabbed.clear();
+    try {
+      const data = await ui("search", params);
+      this.lastSearch = { q, t };
+      this.renderResults(data.results, q);
+    } catch (e) {
+      $("search-results").innerHTML = `
+        <div class="empty" style="margin-top:14px">
+          <span class="t" style="color:#f8a49e">Search failed</span>
+          <span class="s">${esc(e.message)}</span>
+        </div>`;
+    } finally {
+      $("search-status").style.display = "none";
+    }
+  },
+
+  renderResults(results, q) {
+    if (!results.length) {
+      $("search-results").innerHTML = `
+        <div class="empty" style="margin-top:14px">
+          <span class="t">No results for “${esc(q)}”</span>
+          <span class="s">Webshare searches file names only — try the exact release name,
+            or the S01E05 / 1x05 episode form.</span>
+        </div>`;
+      return;
+    }
+    $("search-results").innerHTML = `
+      <div class="table" style="margin-top:14px">
+        <div class="thead">
+          <span style="flex:1">Title — ${results.length} results</span>
+          <span style="width:74px;text-align:right">Size</span>
+          <span style="width:96px"></span>
+        </div>
+        ${results.map((r, i) => `
+        <div class="rrow">
+          <span class="rtitle" title="${esc(r.name)}">${esc(r.title)}</span>
+          <span class="rsize">${fmtSize(r.size)}</span>
+          <div class="rgrab"><button class="accentbtn" data-i="${i}">Grab</button></div>
+        </div>`).join("")}
+      </div>`;
+    for (const btn of $("search-results").querySelectorAll("[data-i]")) {
+      btn.onclick = () => this.grab(results[+btn.dataset.i], btn);
+    }
+  },
+
+  async grab(r, btn) {
+    btn.disabled = true;
+    btn.textContent = "…";
+    const cat = this.lastSearch.t === "movie" ? "movies"
+      : this.lastSearch.t === "tvsearch" ? "tv" : "*";
+    try {
+      // Exactly what Sonarr does: push the fake-NZB URL to the SABnzbd API.
+      const body = await sab({ mode: "addurl", name: r.nzb_url, cat }, true);
+      if (!body.status) throw new Error(body.error || "addurl failed");
+      btn.outerHTML = `<span class="grabbed">✓ In queue</span>`;
+      this.refresh(true);
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = "Grab";
+      alert("Grab failed: " + e.message);
+    }
+  },
+};
+
+App.typeChanged();
+App.refresh(true);
+setInterval(() => App.refresh(), 2000);
+</script>
+</body>
+</html>

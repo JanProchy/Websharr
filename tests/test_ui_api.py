@@ -1,0 +1,118 @@
+"""Tests for the /ui and /ui/api/* endpoints."""
+
+from app.webshare import SearchResult
+
+from .conftest import wait_for
+
+
+def _ui(client, path, **params):
+    params.setdefault("apikey", "testkey")
+    return client.get(f"/ui/api/{path}", params=params)
+
+
+def test_ui_page_served_with_key_injected(client):
+    resp = client.get("/ui")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+    assert "testkey" in resp.text
+    assert "__WEBSHARR_API_KEY__" not in resp.text
+
+
+def test_ui_assets(client):
+    resp = client.get("/ui/assets/favicon.svg")
+    assert resp.status_code == 200
+    assert "svg" in resp.headers["content-type"]
+    assert client.get("/ui/assets/../config.py").status_code in (403, 404)
+    assert client.get("/ui/assets/nope.svg").status_code == 404
+
+
+def test_ui_api_requires_key(client):
+    for path in ("status", "queue", "history", "search"):
+        resp = client.get(f"/ui/api/{path}")
+        assert resp.status_code == 403, path
+        resp = client.get(f"/ui/api/{path}", params={"apikey": "wrong"})
+        assert resp.status_code == 403, path
+
+
+def test_ui_status(client):
+    body = _ui(client, "status").json()
+    assert body["app"] == "websharr"
+    assert "version" in body
+    assert body["queue"] == 0
+    assert body["history"] == 0
+
+
+def test_ui_search_returns_json(client, fake_webshare):
+    fake_webshare.results = [
+        SearchResult("id1", "Zaklinac.S01E05.1080p.CZ.mkv", 4_000_000_000),
+        SearchResult("id2", "Zaklinac.S01E05.2160p.CZ.mkv", 12_000_000_000),
+        SearchResult("id3", "Zaklinac.S01E05.readme.txt", 1_000),  # not video
+        SearchResult("id4", "Zaklinac.S01E05.720p.mkv", 1_000_000_000, password=True),
+    ]
+    body = _ui(client, "search", q="Zaklinac", t="tvsearch", season="1", ep="5").json()
+
+    assert body["queries"] == ["Zaklinac S01E05", "Zaklinac 1x05"]
+    results = body["results"]
+    # txt and password-protected filtered out; sorted by size desc
+    assert [r["ident"] for r in results] == ["id2", "id1"]
+    assert results[0]["title"] == "Zaklinac.S01E05.2160p.CZ"
+    assert results[0]["size"] == 12_000_000_000
+    assert "/torznab/nzb/id2" in results[0]["nzb_url"]
+    assert "apikey=testkey" in results[0]["nzb_url"]
+
+
+def test_ui_search_empty_query(client):
+    body = _ui(client, "search", q="", t="search").json()
+    assert body["results"] == []
+
+
+def test_ui_search_bad_type(client):
+    resp = _ui(client, "search", q="x", t="bogus")
+    assert resp.status_code == 400
+
+
+def test_ui_grab_flow_lands_in_queue_json(client, fake_webshare):
+    """Search via /ui/api/search, grab via SABnzbd addurl (what the UI does),
+    then the job shows up in /ui/api/queue or /ui/api/history."""
+    fake_webshare.results = [SearchResult("idX", "Film.2024.1080p.CZ.mkv", 1234)]
+    result = _ui(client, "search", q="Film 2024", t="movie").json()["results"][0]
+
+    resp = client.post("/sabnzbd/api", params={
+        "mode": "addurl", "apikey": "testkey", "name": result["nzb_url"], "cat": "movies",
+    })
+    body = resp.json()
+    assert body["status"] is True
+    nzo_id = body["nzo_ids"][0]
+
+    def in_ui_api():
+        jobs = (_ui(client, "queue").json()["jobs"]
+                + _ui(client, "history").json()["jobs"])
+        return any(j["nzo_id"] == nzo_id for j in jobs)
+
+    assert wait_for(in_ui_api)
+
+    # Job JSON carries the documented fields.
+    jobs = _ui(client, "queue").json()["jobs"] + _ui(client, "history").json()["jobs"]
+    job = next(j for j in jobs if j["nzo_id"] == nzo_id)
+    for field in ("nzo_id", "ident", "name", "category", "size", "status",
+                  "downloaded", "speed", "error", "storage", "added_ts", "completed_ts"):
+        assert field in job
+    assert job["ident"] == "idX"
+    assert job["name"] == "Film.2024.1080p.CZ.mkv"
+    assert job["category"] == "movies"
+
+
+def test_ui_history_shows_failed_error(client, fake_webshare):
+    # Default fake file_link is unreachable -> download fails.
+    fake_webshare.results = [SearchResult("bad1", "Broken.Movie.2024.mkv", 1000)]
+    result = _ui(client, "search", q="Broken Movie", t="movie").json()["results"][0]
+    nzo_id = client.post("/sabnzbd/api", params={
+        "mode": "addurl", "apikey": "testkey", "name": result["nzb_url"], "cat": "movies",
+    }).json()["nzo_ids"][0]
+
+    assert wait_for(lambda: any(
+        j["nzo_id"] == nzo_id and j["status"] == "failed"
+        for j in _ui(client, "history").json()["jobs"]))
+
+    job = next(j for j in _ui(client, "history").json()["jobs"] if j["nzo_id"] == nzo_id)
+    assert job["error"]

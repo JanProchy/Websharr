@@ -26,6 +26,10 @@ WEBSHARR_API_KEY=some-random-string
 
 In `docker-compose.yml`, adjust the `/downloads` volume so it points to the same folder that Sonarr/Radarr sees (otherwise set up a Remote Path Mapping).
 
+## Web UI
+
+A monitoring and testing interface runs at **`http://localhost:9797/ui`** — live download queue with progress, history with retry, and a manual search tab whose **Grab** button pushes a release through the same SABnzbd flow Sonarr would use. No configuration needed; it shares `WEBSHARR_API_KEY` with the API endpoints.
+
 ## Setup in Sonarr / Radarr
 
 ### Indexer (Settings → Indexers → Add → Torznab, Custom)
