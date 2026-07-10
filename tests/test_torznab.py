@@ -243,7 +243,8 @@ def test_nzb_download(client):
 
 
 def test_nzb_download_non_ascii_name(client):
-    # CZ names ("Řád") aren't latin-1; the Content-Disposition must not 500.
+    # CZ names ("Řád") must be transliterated to pure ASCII in the header —
+    # Prowlarr chokes on a diacritic filename* (RFC 5987), so we don't send one.
     resp = client.get("/torznab/nzb/epk1", params={
         "apikey": "testkey",
         "name": "Skvrna 06 - Řád (Cajda).mp4",
@@ -252,6 +253,6 @@ def test_nzb_download_non_ascii_name(client):
     })
     assert resp.status_code == 200
     cd = resp.headers["content-disposition"]
-    assert "filename*=UTF-8''" in cd
-    # header value stays latin-1 encodable (no raw non-ascii)
-    cd.encode("latin-1")
+    assert "filename*" not in cd                    # no RFC 5987 form
+    assert "Rad" in cd and "Řád" not in cd          # transliterated
+    cd.encode("ascii")                              # pure ASCII, header-safe

@@ -470,12 +470,11 @@ async def torznab_nzb(ident: str, request: Request):
     # name, so the download folder carries SxxEyy for import.
     stem = request.query_params.get("nzbname") or \
         (name.rsplit(".", 1)[0] if "." in name else name)
-    filename = f"{stem}.nzb"
-    # HTTP headers are latin-1; CZ names (Řád, …) aren't. Use RFC 5987 filename*
-    # plus an ASCII fallback so the response doesn't 500 on non-latin-1 chars.
-    ascii_name = re.sub(r"[^\x20-\x7e]", "_", filename).replace('"', "_")
-    encoded = urllib.parse.quote(filename)
-    disposition = f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded}"
+    # Fully transliterate to ASCII — no RFC 5987 filename*: Prowlarr decodes that
+    # back to the diacritics and re-emits them raw in its own header, which its
+    # HTTP layer rejects ("Invalid non-ASCII in header 0x011B" = ě).
+    ascii_name = re.sub(r'[^\x20-\x7e]', "_", _asciify(stem)).replace('"', "_") or "download"
+    disposition = f'attachment; filename="{ascii_name}.nzb"'
     return Response(
         content=content,
         media_type="application/x-nzb",
