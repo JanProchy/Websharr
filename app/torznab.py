@@ -26,7 +26,8 @@ from fastapi import APIRouter, Request, Response
 from .config import config
 from .nzb import build_nzb
 from .settings import settings
-from .tmdb import czech_title, czech_title_by_id
+from .tmdb import lookup as tmdb_lookup
+from .tmdb import lookup_by_id as tmdb_lookup_by_id
 from .webshare import SearchResult, WebshareError
 
 logger = logging.getLogger("websharr.torznab")
@@ -122,6 +123,16 @@ def build_queries(t: str, q: str, season: str | None, ep: str | None) -> list[st
     return [q]
 
 
+def _asciify(text: str) -> str:
+    """Transliterate diacritics and drop remaining non-ASCII: "Bez vědomí" ->
+    "Bez vedomi". Prowlarr puts the release title in an HTTP header when a
+    download is proxied and rejects non-latin-1 chars ("Invalid non-ASCII ...
+    in header"); *arr matches diacritic-insensitively, so this is safe."""
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in text if not unicodedata.combining(c) and ord(c) < 128)
+    return re.sub(r"\s{2,}", " ", text).strip()
+
+
 def release_title(query: str, season: str | None, ep: str | None, name: str) -> str:
     """Sonarr/Radarr-parseable release name.
 
@@ -132,11 +143,11 @@ def release_title(query: str, season: str | None, ep: str | None, name: str) -> 
     """
     stem = name.rsplit(".", 1)[0] if "." in name else name
     if season is None:
-        return stem
+        return _asciify(stem)
     try:
         s = int(season)
     except (TypeError, ValueError):
-        return stem
+        return _asciify(stem)
     q = (query or "").strip()
     if ep is not None:
         try:
@@ -150,7 +161,7 @@ def release_title(query: str, season: str | None, ep: str | None, name: str) -> 
     stem = re.sub(r"\b(s\d{1,2}e\d{1,3}|\d{1,2}x\d{1,3})\b", "", stem, flags=re.I)
     stem = re.sub(r"\.{2,}", ".", stem)          # double dots left by the removal
     stem = re.sub(r"\s{2,}", " ", stem).strip(" .-")
-    return f"{prefix} - {stem}".strip(" -")
+    return _asciify(f"{prefix} - {stem}".strip(" -"))
 
 
 def _is_video(name: str) -> bool:
@@ -235,21 +246,31 @@ def _tmdb_kind(t: str, cat: str | None) -> str:
 
 
 async def expand_titles(t: str, q: str, cat: str | None, *, tvdbid: str | None = None,
-                        imdbid: str | None = None, tmdbid: str | None = None) -> list[str]:
-    """Candidate search titles: the query, manual-alias titles, and — when a TMDB
-    token is set — the Czech title. An exact TMDB id (tmdb/imdb/tvdb, sent by
-    *arr when caps advertise it) is preferred; otherwise a fuzzy title lookup."""
+                        imdbid: str | None = None, tmdbid: str | None = None
+                        ) -> tuple[list[str], str]:
+    """Return (search_titles, display_title).
+
+    search_titles: the query, manual-alias titles, and the TMDB original title —
+    all searched, and any matching file is accepted.
+    display_title: the canonical name used as the release-name prefix, so Sonarr
+    shows "The Sleepers" instead of whatever alias/query happened to match.
+    """
     titles = [q] + alias_titles(q, settings.aliases)
+    display = q
     if settings.tmdb_token:
         kind = _tmdb_kind(t, cat)
-        cz = None
+        res = None
         if tmdbid or imdbid or tvdbid:
-            cz = await czech_title_by_id(settings.tmdb_token, kind, tmdbid, imdbid, tvdbid)
-        if not cz:
-            cz = await czech_title(settings.tmdb_token, kind, q)
-        if cz and normalize_text(cz) not in {normalize_text(x) for x in titles}:
-            titles.append(cz)
-    return titles
+            res = await tmdb_lookup_by_id(settings.tmdb_token, kind, tmdbid, imdbid, tvdbid)
+        if not res:
+            res = await tmdb_lookup(settings.tmdb_token, kind, q)
+        if res:
+            disp, orig = res
+            if disp:
+                display = disp  # prefix releases with the canonical title
+            if orig and normalize_text(orig) not in {normalize_text(x) for x in titles}:
+                titles.append(orig)
+    return titles, display
 
 
 def matches_query(query, name: str) -> bool:
@@ -373,8 +394,9 @@ async def torznab_api(request: Request):
 
     t, q, season, ep = parse_query(t, params.get("q", ""), params.get("season"), params.get("ep"))
     # A *arr query may match a Webshare/CZ title (alias map or TMDB lookup);
-    # search all and accept files matching any of them.
-    titles = await expand_titles(
+    # search all and accept files matching any of them. `display` is the nice
+    # title used to prefix the release name.
+    titles, display = await expand_titles(
         t, q, params.get("cat"), tvdbid=params.get("tvdbid"),
         imdbid=params.get("imdbid"), tmdbid=params.get("tmdbid"))
     queries = []
@@ -426,7 +448,7 @@ async def torznab_api(request: Request):
     shown = merged[:limit]
     heights = await _resolutions(client, shown)
     return _render_feed(request, shown, category, heights=heights,
-                        query=q, season=(season if t == "tvsearch" else None), ep=ep)
+                        query=display, season=(season if t == "tvsearch" else None), ep=ep)
 
 
 @router.get("/torznab/nzb/{ident}")

@@ -87,22 +87,30 @@ def test_expand_titles_uses_tmdb(monkeypatch):
     monkeypatch.setattr(settings, "tmdb_token", "tok")
 
     async def by_id(token, kind, tmdbid=None, imdbid=None, tvdbid=None):
-        return "Bez vědomí" if tvdbid == "358583" else None
+        return ("The Sleepers", "Bez vědomí") if tvdbid == "358583" else None
 
     async def by_name(token, kind, q):
-        return "Bez vědomí" if "sleepers" in q.lower() else None
+        return ("The Sleepers", "Bez vědomí") if "sleepers" in q.lower() else None
 
-    monkeypatch.setattr(torznab, "czech_title_by_id", by_id)
-    monkeypatch.setattr(torznab, "czech_title", by_name)
+    monkeypatch.setattr(torznab, "tmdb_lookup_by_id", by_id)
+    monkeypatch.setattr(torznab, "tmdb_lookup", by_name)
 
-    # exact id lookup wins
-    titles = asyncio.run(torznab.expand_titles("tvsearch", "Sleepers", "5000", tvdbid="358583"))
-    assert "Bez vědomí" in titles
+    # exact id lookup wins; the original title is added and display is canonical
+    titles, display = asyncio.run(
+        torznab.expand_titles("tvsearch", "Sleepers", "5000", tvdbid="358583"))
+    assert "Bez vědomí" in titles and display == "The Sleepers"
     # fuzzy name lookup when no id
-    assert "Bez vědomí" in asyncio.run(torznab.expand_titles("tvsearch", "Sleepers", "5000"))
+    titles, display = asyncio.run(torznab.expand_titles("tvsearch", "Sleepers", "5000"))
+    assert "Bez vědomí" in titles and display == "The Sleepers"
     # no token -> just the query
     monkeypatch.setattr(settings, "tmdb_token", "")
-    assert asyncio.run(torznab.expand_titles("tvsearch", "Sleepers", "5000")) == ["Sleepers"]
+    assert asyncio.run(torznab.expand_titles("tvsearch", "Sleepers", "5000")) == (["Sleepers"], "Sleepers")
+
+
+def test_release_title_asciified():
+    # diacritics transliterated so Prowlarr's download header stays latin-1 safe.
+    assert release_title("The Sleepers", "1", "2", "Bez vědomí.S01E02.mkv") == \
+        "The Sleepers S01E02 - Bez vedomi"
 
 
 def test_file_episode():

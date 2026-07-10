@@ -379,7 +379,7 @@ async def ui_search(request: Request):
         return JSONResponse({"error": f"Unknown search type '{t}'"}, status_code=400)
 
     t, q, season, ep = parse_query(t, params.get("q", ""), params.get("season"), params.get("ep"))
-    titles = await expand_titles(
+    titles, display = await expand_titles(
         t, q, params.get("cat"), tvdbid=params.get("tvdbid"),
         imdbid=params.get("imdbid"), tmdbid=params.get("tmdbid"))
     queries = []
@@ -417,7 +417,7 @@ async def ui_search(request: Request):
     rel_ep = ep if t == "tvsearch" else None
     return {
         "results": [
-            _result_json(request, r, release_title(q, rel_season, rel_ep, r.name))
+            _result_json(request, r, release_title(display, rel_season, rel_ep, r.name))
             for r in merged[:limit]
         ],
         "queries": queries,
