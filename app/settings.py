@@ -57,6 +57,9 @@ class Settings:
         # searched under its Czech title looked up from TMDB. Env var is the
         # initial default; a value saved in the UI overrides it.
         self.tmdb_token: str = config.tmdb_token
+        # Concurrent-download limit; env var is the initial default, editable in
+        # the UI (Settings and the Queue page).
+        self.max_concurrent: int = config.max_concurrent
 
     @property
     def configured(self) -> bool:
@@ -84,6 +87,10 @@ class Settings:
         aliases = data.get("aliases", [])
         self.aliases = [a for a in aliases if a.get("from") and a.get("to")]
         self.tmdb_token = data.get("tmdb_token") or config.tmdb_token
+        try:
+            self.max_concurrent = max(1, int(data.get("max_concurrent") or config.max_concurrent))
+        except (TypeError, ValueError):
+            self.max_concurrent = config.max_concurrent
 
     def save(self) -> None:
         path = config.settings_file
@@ -99,6 +106,7 @@ class Settings:
             "secret": self.secret,
             "aliases": self.aliases,
             "tmdb_token": self.tmdb_token,
+            "max_concurrent": self.max_concurrent,
         }
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         path.chmod(0o600)

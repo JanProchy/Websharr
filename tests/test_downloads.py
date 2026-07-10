@@ -210,3 +210,73 @@ def test_retry_unknown_job(client):
         "mode": "retry", "apikey": "testkey", "value": "SABnzbd_nzo_nonexistent",
     })
     assert resp.json()["status"] is False
+
+
+def _set_max(client, n):
+    resp = client.post("/ui/api/settings", params={"apikey": "testkey"},
+                       json={"max_concurrent": n})
+    assert resp.status_code == 200
+    return resp
+
+
+def _add_slow_jobs(client, payload_len, count):
+    ids = []
+    for i in range(count):
+        nzb = build_nzb(f"c{i}", f"File{i}.mkv", payload_len)
+        nzo = client.post(
+            "/sabnzbd/api",
+            params={"mode": "addfile", "apikey": "testkey", "cat": "tv"},
+            files={"nzbfile": (f"Show S01E0{i}.nzb", nzb.encode(), "application/x-nzb")},
+        ).json()["nzo_ids"][0]
+        ids.append(nzo)
+    return ids
+
+
+def test_max_concurrent_limits_active_downloads(tmp_path, monkeypatch):
+    payload = b"z" * (4 * 1024 * 1024)
+    httpd = _serve_slow(payload, chunk=65536, delay=0.03)
+    try:
+        url = f"http://127.0.0.1:{httpd.server_address[1]}/f.mkv"
+        with _start_app(tmp_path, monkeypatch, url) as client:
+            manager = app.state.downloads
+            _set_max(client, 1)
+            ids = _add_slow_jobs(client, len(payload), 3)
+
+            def active():
+                return sum(1 for j in manager.queue_jobs() if j.status == "downloading")
+
+            assert wait_for(lambda: active() == 1)
+            # Never exceed the limit while several jobs wait.
+            for _ in range(6):
+                assert active() <= 1
+                assert manager.get(ids[1]).status == "queued"
+                time.sleep(0.05)
+
+            # Raising the limit immediately starts more waiting jobs.
+            _set_max(client, 3)
+            assert wait_for(lambda: active() == 3)
+    finally:
+        httpd.shutdown()
+
+
+def test_reorder_changes_queue_order(tmp_path, monkeypatch):
+    payload = b"z" * (4 * 1024 * 1024)
+    httpd = _serve_slow(payload, chunk=65536, delay=0.03)
+    try:
+        url = f"http://127.0.0.1:{httpd.server_address[1]}/f.mkv"
+        with _start_app(tmp_path, monkeypatch, url) as client:
+            manager = app.state.downloads
+            _set_max(client, 1)
+            ids = _add_slow_jobs(client, len(payload), 3)
+            assert wait_for(lambda: manager.get(ids[0]).status == "downloading")
+
+            # Move the last queued job ahead of the other queued one.
+            resp = client.post("/ui/api/queue/reorder", params={"apikey": "testkey"},
+                               json={"order": [ids[0], ids[2], ids[1]]})
+            assert resp.json()["ok"] is True
+            assert [j.nzo_id for j in manager.queue_jobs()] == [ids[0], ids[2], ids[1]]
+            # The reorder must not have started a second download.
+            assert manager.get(ids[2]).status == "queued"
+            assert manager.get(ids[1]).status == "queued"
+    finally:
+        httpd.shutdown()

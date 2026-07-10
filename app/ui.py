@@ -177,6 +177,7 @@ async def ui_settings_get(request: Request):
         "incomplete_dir": str(config.incomplete_dir),
         "aliases": settings.aliases,
         "tmdb_token_set": bool(settings.tmdb_token),
+        "max_concurrent": request.app.state.downloads.max_concurrent,
     }
 
 
@@ -238,6 +239,13 @@ async def ui_settings_post(request: Request):
     if "tmdb_token" in body:
         # Empty string clears it; a value sets it.
         settings.tmdb_token = (body.get("tmdb_token") or "").strip()
+
+    if "max_concurrent" in body:
+        try:
+            n = max(1, min(int(body.get("max_concurrent")), 10))
+        except (TypeError, ValueError):
+            return JSONResponse({"error": "max_concurrent must be a number"}, status_code=400)
+        settings.max_concurrent = request.app.state.downloads.set_max_concurrent(n)
 
     settings.save()
     settings.apply()
@@ -304,6 +312,7 @@ async def ui_status(request: Request):
         "webshare_user": config.webshare_username or None,
         "queue": len(manager.queue_jobs()),
         "history": len(manager.history_jobs()),
+        "max_concurrent": manager.max_concurrent,
     }
 
 
@@ -313,6 +322,17 @@ async def ui_queue(request: Request):
         return _unauthorized()
     manager: DownloadManager = request.app.state.downloads
     return {"jobs": [_job_json(j) for j in manager.queue_jobs()]}
+
+
+@router.post("/ui/api/queue/reorder")
+async def ui_queue_reorder(request: Request):
+    """Set the queue order from a drag-and-drop reorder in the UI."""
+    if not _authorized(request):
+        return _unauthorized()
+    body = await request.json()
+    order = [str(x) for x in body.get("order", []) if x]
+    request.app.state.downloads.reorder(order)
+    return {"ok": True}
 
 
 @router.get("/ui/api/history")

@@ -56,7 +56,7 @@ async def lifespan(app: FastAPI):
         complete_dir=config.complete_dir,
         incomplete_dir=config.incomplete_dir,
         state_file=config.state_file,
-        max_concurrent=config.max_concurrent,
+        max_concurrent=settings.max_concurrent,
     )
     manager.ensure_dirs()
     manager.load_state()

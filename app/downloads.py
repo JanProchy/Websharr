@@ -76,9 +76,21 @@ class DownloadManager:
         self._complete_dir = complete_dir
         self._incomplete_dir = incomplete_dir
         self._state_file = state_file
-        self._semaphore = asyncio.Semaphore(max_concurrent)
+        self._max_concurrent = max(1, int(max_concurrent))
         self._jobs: dict[str, Job] = {}
         self._tasks: dict[str, asyncio.Task] = {}
+
+    @property
+    def max_concurrent(self) -> int:
+        return self._max_concurrent
+
+    def set_max_concurrent(self, value: int) -> int:
+        """Change the concurrency limit at runtime. Running downloads keep their
+        slot; a higher limit immediately starts more queued jobs, a lower one
+        just applies as active downloads finish."""
+        self._max_concurrent = max(1, min(int(value), 10))
+        self._schedule()
+        return self._max_concurrent
 
     def ensure_dirs(self) -> None:
         """Pre-create the category folders so *arr's download-client health
@@ -110,8 +122,8 @@ class DownloadManager:
         for job in self._jobs.values():
             if job.status in ("queued", "downloading"):
                 job.status = "queued"
-                self._start(job)
                 logger.info("Re-queued unfinished job %s (%s)", job.nzo_id, job.name)
+        self._schedule()
 
     def _save_state(self) -> None:
         try:
@@ -135,17 +147,33 @@ class DownloadManager:
             title=sanitize_filename(title) if title else "",
         )
         self._jobs[job.nzo_id] = job
-        self._start(job)
         self._save_state()
         logger.info("Queued download %s -> %s (cat=%s)", ident, job.name, job.category)
+        self._schedule()
         return job
 
     def get(self, nzo_id: str) -> Job | None:
         return self._jobs.get(nzo_id)
 
+    _QUEUE_STATES = ("queued", "downloading", "paused")
+
     def queue_jobs(self) -> list[Job]:
-        return [j for j in self._jobs.values()
-                if j.status in ("queued", "downloading", "paused")]
+        return [j for j in self._jobs.values() if j.status in self._QUEUE_STATES]
+
+    def reorder(self, order: list[str]) -> bool:
+        """Rearrange the queue to match the given list of nzo_ids. Only the order
+        in which queued jobs start is affected — jobs already downloading keep
+        their slot. Unlisted queue jobs keep their relative order at the end."""
+        rank = {nzo: i for i, nzo in enumerate(order)}
+        queue = [j for j in self._jobs.values() if j.status in self._QUEUE_STATES]
+        rest = [j for j in self._jobs.values() if j.status not in self._QUEUE_STATES]
+        queue.sort(key=lambda j: rank.get(j.nzo_id, len(rank)))
+        self._jobs = {j.nzo_id: j for j in queue}
+        for job in rest:
+            self._jobs[job.nzo_id] = job
+        self._save_state()
+        self._schedule()
+        return True
 
     def pause(self, nzo_id: str) -> bool:
         """Stop an active/queued download but keep its partial file for resume."""
@@ -158,6 +186,7 @@ class DownloadManager:
         if task is not None and not task.done():
             task.cancel()  # CancelledError unwinds; status stays "paused"
         self._save_state()
+        self._schedule()  # let a waiting job take the freed slot
         logger.info("Paused %s (%s)", nzo_id, job.name)
         return True
 
@@ -167,7 +196,7 @@ class DownloadManager:
         if job is None or job.status != "paused":
             return False
         job.status = "queued"
-        self._start(job)
+        self._schedule()
         self._save_state()
         logger.info("Resumed %s (%s)", nzo_id, job.name)
         return True
@@ -207,7 +236,7 @@ class DownloadManager:
         job.status = "queued"
         job.error = ""
         job.completed_ts = 0.0
-        self._start(job)
+        self._schedule()
         self._save_state()
         logger.info("Retrying job %s (%s)", job.nzo_id, job.name)
         return job
@@ -241,17 +270,29 @@ class DownloadManager:
     def _cleanup_incomplete(self, job: Job) -> None:
         shutil.rmtree(self._incomplete_path(job), ignore_errors=True)
 
-    def _start(self, job: Job) -> None:
-        self._tasks[job.nzo_id] = asyncio.create_task(self._run(job))
+    def _schedule(self) -> None:
+        """Start queued jobs in queue order until the concurrency limit is hit.
+
+        Replaces a fixed semaphore so the limit can change at runtime and the
+        queue order (drag-and-drop) decides which job runs next. A job's slot is
+        claimed synchronously (status -> downloading) before its task is created,
+        so repeated calls in the same tick never over-schedule.
+        """
+        active = sum(1 for j in self._jobs.values() if j.status == "downloading")
+        for job in self._jobs.values():
+            if active >= self._max_concurrent:
+                break
+            if job.status == "queued" and job.nzo_id not in self._tasks:
+                job.status = "downloading"
+                self._tasks[job.nzo_id] = asyncio.create_task(self._run(job))
+                active += 1
 
     async def _run(self, job: Job) -> None:
         try:
-            async with self._semaphore:
-                if job.nzo_id not in self._jobs:
-                    return  # deleted while queued
-                job.status = "downloading"
-                self._save_state()
-                await self._download(job)
+            if job.nzo_id not in self._jobs:
+                return  # deleted before the task got to run
+            self._save_state()
+            await self._download(job)
             job.status = "completed"
             job.completed_ts = time.time()
             logger.info("Completed %s -> %s", job.nzo_id, job.storage)
@@ -269,6 +310,7 @@ class DownloadManager:
             if job.nzo_id in self._jobs:
                 self._prune_history()
                 self._save_state()
+            self._schedule()  # a slot freed — start the next queued job
 
     def _prune_history(self) -> None:
         """Cap the retained history so state.json can't grow without bound."""

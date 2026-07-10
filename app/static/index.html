@@ -95,6 +95,19 @@
   /* queue */
   #queue-list { display: flex; flex-direction: column; gap: 8px; }
   .qcard { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 11px 14px; }
+  .qcard.dragging { opacity: .55; border-color: var(--accent); }
+  .qcard.dragover { border-color: var(--accent); }
+  .grip { color: var(--faint); cursor: grab; font-size: 15px; line-height: 1;
+    user-select: none; flex-shrink: 0; letter-spacing: -2px; }
+  .grip:active { cursor: grabbing; }
+  .qmax { margin-left: auto; display: flex; align-items: center; gap: 7px;
+    color: var(--muted); font-size: 13px; font-weight: 700; }
+  .qmax .stepbtn { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;
+    background: var(--inner); border: 1px solid var(--border); color: var(--muted);
+    border-radius: 6px; font-size: 16px; font-weight: 800; cursor: pointer; line-height: 1; padding: 0; }
+  .qmax .stepbtn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+  .qmax .stepbtn:disabled { opacity: .35; cursor: default; }
+  .qmax #qmax-val { min-width: 14px; text-align: center; color: var(--text); font-weight: 800; }
   .qrow1 { display: flex; align-items: center; gap: 10px; }
   .qname { font-weight: 700; font-size: 14.5px; white-space: nowrap; overflow: hidden;
     text-overflow: ellipsis; flex: 1; min-width: 0; }
@@ -285,7 +298,14 @@
 
 <main>
   <section class="view active" id="view-queue">
-    <div class="viewhead"><h2>Queue</h2><span class="sub" id="queue-summary"></span></div>
+    <div class="viewhead"><h2>Queue</h2><span class="sub" id="queue-summary"></span>
+      <div class="qmax" title="How many files download at once">
+        <span>Max downloads</span>
+        <button class="stepbtn" id="qmax-dec" aria-label="Fewer">−</button>
+        <span id="qmax-val">—</span>
+        <button class="stepbtn" id="qmax-inc" aria-label="More">+</button>
+      </div>
+    </div>
     <div class="empty" id="queue-empty" style="display:none">
       <img src="/ui/assets/logo.svg" alt="">
       <span class="t">Queue is empty</span>
@@ -495,6 +515,24 @@
 
     <div class="scard">
       <div class="sinfo">
+        <h3>Downloads</h3>
+        <p class="shint">How many files download from Webshare at the same time. Extra
+          grabs wait in the queue. You can also change this right on the
+          <b>Queue</b> page.</p>
+      </div>
+      <div class="sform">
+        <label>Max concurrent downloads
+          <input id="set-maxdl" type="number" min="1" max="10" step="1"></label>
+        <div class="srow">
+          <div class="spacer"></div>
+          <button class="primary" id="set-maxdl-save">Save</button>
+        </div>
+        <span class="sresult" id="set-maxdl-result"></span>
+      </div>
+    </div>
+
+    <div class="scard">
+      <div class="sinfo">
         <h3>Czech titles (TMDB)</h3>
         <p class="shint">Sonarr/Radarr search by the title they know (usually English),
           but many Webshare files use the Czech name. With a <b>TMDB API Read Access
@@ -605,6 +643,16 @@ function clockTime(ts) {
 }
 // Friendly label for the internal category values Sonarr/SABnzbd use.
 function catLabel(c) { return c === "*" ? "other" : c === "tv" ? "shows" : c; }
+// The queue card the dragged one should be inserted before, based on cursor Y
+// (the first card whose vertical midpoint is below the pointer).
+function dragAfter(list, y) {
+  const cards = [...list.querySelectorAll(".qcard:not(.dragging)")];
+  for (const c of cards) {
+    const box = c.getBoundingClientRect();
+    if (y < box.top + box.height / 2) return c;
+  }
+  return null;
+}
 // Best-effort episode number from a filename ("Skvrna 05 - Bestie" -> "5"),
 // falling back to a trailing number in the search query. Skips 3-4 digit
 // tokens so resolutions (720/1080/2160) and years aren't mistaken for episodes.
@@ -701,6 +749,7 @@ const App = {
       $("set-ui-user").value = s.ui_username;
       $("set-dir-complete").value = s.complete_dir;
       $("set-dir-incomplete").value = s.incomplete_dir;
+      $("set-maxdl").value = s.max_concurrent || 2;
       $("set-tmdb-token").value = "";
       $("set-tmdb-token").placeholder = s.tmdb_token_set
         ? "•••••••• (set — leave empty to keep)" : "TMDB Read Access Token";
@@ -756,6 +805,7 @@ const App = {
       this.setOffline(false);
       $("user-name").textContent = status.user || "—";
       $("queue-count").textContent = queue.jobs.length;
+      if (typeof status.max_concurrent === "number") this.setMaxDisplay(status.max_concurrent);
       this.renderQueue(queue.jobs);
       this.renderHistory(history.jobs);
     } catch (e) {
@@ -783,8 +833,10 @@ const App = {
         card = document.createElement("div");
         card.className = "qcard";
         card.dataset.id = j.nzo_id;
+        card.draggable = true;
         card.innerHTML = `
           <div class="qrow1">
+            <span class="grip" title="Drag to reorder">⠿</span>
             <span class="pill"></span>
             <span class="qname"></span>
             <span class="chip"></span>
@@ -799,6 +851,17 @@ const App = {
           <div class="cslot"></div>`;
         card.querySelector(".xbtn").onclick = () => { this.confirmId = j.nzo_id; this.refresh(); this.renderConfirms(); };
         card.querySelector(".pausebtn").onclick = () => this.togglePause(j.nzo_id, card);
+        card.addEventListener("dragstart", (e) => {
+          this.dragActive = true;
+          card.classList.add("dragging");
+          e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData("text/plain", j.nzo_id);
+        });
+        card.addEventListener("dragend", () => {
+          card.classList.remove("dragging");
+          this.dragActive = false;
+          this.commitOrder();
+        });
         list.appendChild(card);
       }
       card.querySelector(".pill").className = "pill " + j.status;
@@ -819,7 +882,53 @@ const App = {
       card.querySelector(".eta").textContent = fmtEta(j);
     }
     for (const card of [...list.children]) if (!seen.has(card.dataset.id)) card.remove();
+    // Keep the DOM order matching the server's queue order (skip while the user
+    // is dragging, so we don't yank a card out from under the cursor).
+    if (!this.dragActive) {
+      for (const j of jobs) {
+        const c = list.querySelector(`[data-id="${j.nzo_id}"]`);
+        if (c) list.appendChild(c);
+      }
+    }
+    if (!list._dragBound) {
+      list.addEventListener("dragover", (e) => {
+        if (!this.dragActive) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        const dragging = list.querySelector(".qcard.dragging");
+        if (!dragging) return;
+        const after = dragAfter(list, e.clientY);
+        if (after == null) list.appendChild(dragging);
+        else list.insertBefore(dragging, after);
+      });
+      list._dragBound = true;
+    }
     this.renderConfirms();
+  },
+
+  async commitOrder() {
+    const order = [...$("queue-list").children].map((c) => c.dataset.id);
+    try {
+      await uiPost("queue/reorder", { order });
+    } catch (e) { /* offline banner covers it */ }
+    this.refresh(true);
+  },
+
+  async setMaxConcurrent(delta) {
+    const cur = parseInt($("qmax-val").textContent, 10) || 1;
+    const next = Math.max(1, Math.min(cur + delta, 10));
+    if (next === cur) return;
+    this.setMaxDisplay(next);  // optimistic
+    try {
+      await uiPost("settings", { max_concurrent: next });
+    } catch (e) { /* next refresh corrects the value */ }
+    this.refresh(true);
+  },
+
+  setMaxDisplay(n) {
+    $("qmax-val").textContent = n;
+    $("qmax-dec").disabled = n <= 1;
+    $("qmax-inc").disabled = n >= 10;
   },
 
   renderConfirms() {
@@ -1196,6 +1305,17 @@ $("alias-add").onclick = () => {
   if (last) last.focus();
 };
 $("alias-save").onclick = () => App.saveAliases();
+$("qmax-dec").onclick = () => App.setMaxConcurrent(-1);
+$("qmax-inc").onclick = () => App.setMaxConcurrent(1);
+$("set-maxdl-save").onclick = async () => {
+  const n = Math.max(1, Math.min(parseInt($("set-maxdl").value, 10) || 1, 10));
+  $("set-maxdl").value = n;
+  try {
+    await uiPost("settings", { max_concurrent: n });
+    sresult("set-maxdl-result", true, "✓ Saved");
+    App.refresh(true);
+  } catch (e) { sresult("set-maxdl-result", false, e.message); }
+};
 
 const TABS = ["queue", "history", "search", "log", "help", "settings"];
 const tabFromPath = () => {
