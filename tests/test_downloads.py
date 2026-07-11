@@ -212,6 +212,16 @@ def test_retry_unknown_job(client):
     assert resp.json()["status"] is False
 
 
+def test_stats_endpoint(client):
+    resp = client.get("/stats", params={"apikey": "testkey"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert {"downloading", "queued", "speed", "failed"}.issubset(data)
+    assert isinstance(data["downloading"], int) and isinstance(data["speed"], str)
+    # Wrong key must not expose queue details.
+    assert client.get("/stats", params={"apikey": "nope"}).status_code == 403
+
+
 def _set_max(client, n):
     resp = client.post("/ui/api/settings", params={"apikey": "testkey"},
                        json={"max_concurrent": n})

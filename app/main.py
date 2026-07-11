@@ -9,6 +9,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
 from . import __version__
 from . import applog
@@ -91,3 +92,34 @@ async def status():
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+def _fmt_speed(bps: float) -> str:
+    if bps <= 0:
+        return "0 KB/s"
+    mb = bps / (1024 * 1024)
+    return f"{mb:.1f} MB/s" if mb >= 1 else f"{bps / 1024:.0f} KB/s"
+
+
+@app.get("/stats")
+async def stats(apikey: str = ""):
+    """Compact metrics for a Homepage (or similar) dashboard widget.
+
+    Guarded by the same API key as the indexer/client so queue details aren't
+    public. Speed is a preformatted string; a raw bytes/s value is included too.
+    """
+    if apikey != config.api_key:
+        return JSONResponse({"error": "API Key Incorrect"}, status_code=403)
+    manager: DownloadManager = app.state.downloads
+    queue = manager.queue_jobs()
+    downloading = [j for j in queue if j.status == "downloading"]
+    queued = [j for j in queue if j.status in ("queued", "paused")]
+    speed = sum(j.speed for j in downloading)
+    failed = sum(1 for j in manager.history_jobs() if j.status == "failed")
+    return {
+        "downloading": len(downloading),
+        "queued": len(queued),
+        "speed": _fmt_speed(speed),
+        "speed_bps": int(speed),
+        "failed": failed,
+    }
