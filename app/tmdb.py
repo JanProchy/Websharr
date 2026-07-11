@@ -42,6 +42,54 @@ def _language(entry: dict) -> str:
     return (entry.get("original_language") or "").strip().lower()
 
 
+# Countries whose alternative title we treat as the English name Sonarr/Radarr
+# use for a title that has no English name of its own (its `name` is the foreign
+# original). Sonarr matches releases by that title, so the release prefix must be it.
+_ENGLISH_COUNTRIES = {"US", "GB", "CA", "AU", "NZ", "IE"}
+
+
+def _pick_english(items: list) -> str:
+    """First English-country alternative title from a TMDB alternative_titles list."""
+    for it in items or []:
+        if (it.get("iso_3166_1") or "").upper() in _ENGLISH_COUNTRIES:
+            title = (it.get("title") or "").strip()
+            if title:
+                return title
+    return ""
+
+
+async def _english_title(client, kind: str, tmdb_id) -> str:
+    """The English alternative title for a TMDB id, or "" if none/failed."""
+    if not tmdb_id:
+        return ""
+    try:
+        r = await client.get(f"{_BASE}/{kind}/{tmdb_id}/alternative_titles")
+        if r.status_code != 200:
+            return ""
+        body = r.json()
+        # TV returns "results", movie returns "titles".
+        return _pick_english(body.get("results") or body.get("titles") or [])
+    except (httpx.HTTPError, KeyError, ValueError):
+        return ""
+
+
+async def _resolve(client, entry: dict, kind: str) -> tuple[str, str, str]:
+    """(display, original, language) for a TMDB entry.
+
+    When the canonical name is itself the foreign original (no distinct English
+    name), swap in the English alternative title as the display — that's what
+    Sonarr/Radarr call the show and match releases against — and keep the foreign
+    name as the search term.
+    """
+    disp, orig = _titles(entry, kind)
+    lang = _language(entry)
+    if disp and not orig and lang and lang != "en":
+        eng = await _english_title(client, kind, entry.get("id"))
+        if eng and eng.casefold() != disp.casefold():
+            orig, disp = disp, eng
+    return disp, orig, lang
+
+
 async def lookup(token: str, kind: str, query: str) -> tuple[str, str, str] | None:
     """(display, original, language) for a TMDB `tv`/`movie` matched by name.
 
@@ -64,24 +112,18 @@ async def lookup(token: str, kind: str, query: str) -> tuple[str, str, str] | No
             resp = await client.get(f"{_BASE}/search/{kind}", params={"query": query})
             resp.raise_for_status()
             results = resp.json().get("results") or []
+            if not results:
+                _cache[key] = None
+                return None
+            # Prefer a result with a foreign original title (what we want); fall
+            # back to the most relevant match for its language.
+            entry = next((e for e in results[:5] if _titles(e, kind)[1]), results[0])
+            found = await _resolve(client, entry, kind)
     except (httpx.HTTPError, KeyError, ValueError) as exc:
         logger.warning("TMDB search %r (%s) failed: %s", query, kind, exc)
         return None
-    if not results:
-        _cache[key] = None
-        return None
-    lang = _language(results[0])
-    disp_out, orig_out = "", ""
-    for entry in results[:5]:
-        disp, orig = _titles(entry, kind)
-        if orig:
-            disp_out, orig_out = disp, orig
-            lang = _language(entry) or lang
-            break
-    found = (disp_out, orig_out, lang)
     _cache[key] = found
-    logger.info("TMDB: %s %r -> display=%r original=%r lang=%r",
-                kind, query, disp_out, orig_out, lang)
+    logger.info("TMDB: %s %r -> display=%r original=%r lang=%r", kind, query, *found)
     return found
 
 
@@ -120,6 +162,7 @@ async def lookup_by_id(token: str, kind: str, tmdbid=None, imdbid=None,
         return hits[0] if hits else {}
 
     entry: dict = {}
+    disp = orig = lang = ""
     try:
         async with httpx.AsyncClient(timeout=10.0, headers=_headers(token)) as client:
             if tmdbid:
@@ -130,12 +173,12 @@ async def lookup_by_id(token: str, kind: str, tmdbid=None, imdbid=None,
                 entry = await _find(client, tvdbid, "tvdb_id")
             if not entry and imdb:
                 entry = await _find(client, imdb, "imdb_id")
+            if entry:
+                disp, orig, lang = await _resolve(client, entry, kind)
     except (httpx.HTTPError, KeyError, ValueError) as exc:
         logger.warning("TMDB id lookup %s (tmdb=%s tvdb=%s imdb=%s) failed: %s",
                        kind, tmdbid, tvdbid, imdb, exc)
         return None
-    disp, orig = _titles(entry, kind) if entry else ("", "")
-    lang = _language(entry) if entry else ""
     found = (disp, orig, lang) if (disp or orig or lang) else None
     _cache[key] = found
     if found:
