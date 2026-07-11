@@ -222,6 +222,16 @@ def test_stats_endpoint(client):
     assert client.get("/stats", params={"apikey": "nope"}).status_code == 403
 
 
+def test_metrics_endpoint(client):
+    resp = client.get("/metrics", params={"apikey": "testkey"})
+    assert resp.status_code == 200
+    body = resp.text
+    assert "websharr_up 1" in body
+    assert "# TYPE websharr_queue_downloading gauge" in body
+    assert "websharr_history_failed" in body
+    assert client.get("/metrics", params={"apikey": "nope"}).status_code == 403
+
+
 def _set_max(client, n):
     resp = client.post("/ui/api/settings", params={"apikey": "testkey"},
                        json={"max_concurrent": n})

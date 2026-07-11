@@ -252,6 +252,14 @@
     border-radius: 8px; padding: 8px 12px; color: var(--text); font-weight: 600; outline: none; }
   .sform input:focus { border-color: var(--accent); }
   .sform input[readonly] { color: var(--muted); font-family: 'JetBrains Mono', monospace; font-size: 13px; }
+  .sform textarea { width: 100%; margin-top: 5px; background: var(--inner); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 12px; color: var(--text); font-weight: 600; outline: none;
+    font-family: 'JetBrains Mono', monospace; font-size: 12.5px; resize: vertical; }
+  .sform textarea:focus { border-color: var(--accent); }
+  .vipline { margin-top: 10px; font-size: 12.5px; font-weight: 700; }
+  .vipline .ok { color: var(--green); }
+  .vipline .warn { color: #f5c451; }
+  .vipline .bad { color: var(--red); }
   .srow { display: flex; align-items: center; gap: 10px; margin-top: 2px; }
   .primary { background: var(--accent); border: none; color: #06202f; border-radius: 8px;
     padding: 8px 18px; font-weight: 800; cursor: pointer; }
@@ -482,6 +490,7 @@
         <h3>Webshare.cz account</h3>
         <p class="shint">The premium account used for searching and downloading. Webshare.cz has
           no API key — just this username/e-mail and password.</p>
+        <div id="ws-vip" class="vipline" style="display:none"></div>
       </div>
       <div class="sform">
         <label>Username or e-mail <input id="set-ws-user" autocomplete="off"></label>
@@ -528,6 +537,28 @@
           <button class="primary" id="set-maxdl-save">Save</button>
         </div>
         <span class="sresult" id="set-maxdl-result"></span>
+      </div>
+    </div>
+
+    <div class="scard">
+      <div class="sinfo">
+        <h3>Notifications</h3>
+        <p class="shint">Get alerted on failed downloads, when Webshare is unreachable,
+          and when your VIP is about to expire. One <b>Apprise</b> URL per line
+          (Discord, Telegram, ntfy, Slack, Gotify, …).</p>
+      </div>
+      <div class="sform">
+        <label>Apprise URLs
+          <textarea id="set-notify-urls" rows="3" autocomplete="off" spellcheck="false"
+            placeholder="ntfy://ntfy.sh/my-topic&#10;discord://webhook_id/token"></textarea></label>
+        <label>Warn when VIP has this many days left or fewer
+          <input id="set-vip-days" type="number" min="0" max="90" step="1"></label>
+        <div class="srow">
+          <button class="accentbtn" id="set-notify-test">Send test</button>
+          <div class="spacer"></div>
+          <button class="primary" id="set-notify-save">Save</button>
+        </div>
+        <span class="sresult" id="set-notify-result"></span>
       </div>
     </div>
 
@@ -750,11 +781,29 @@ const App = {
       $("set-dir-complete").value = s.complete_dir;
       $("set-dir-incomplete").value = s.incomplete_dir;
       $("set-maxdl").value = s.max_concurrent || 2;
+      $("set-notify-urls").value = (s.notify_urls || []).join("\n");
+      $("set-vip-days").value = s.notify_vip_days ?? 7;
+      this.renderVip(s.account);
       $("set-tmdb-token").value = "";
       $("set-tmdb-token").placeholder = s.tmdb_token_set
         ? "•••••••• (set — leave empty to keep)" : "TMDB Read Access Token";
       this.renderAliases(s.aliases || []);
     } catch (e) { /* offline banner already covers this */ }
+  },
+
+  renderVip(acct) {
+    const el = $("ws-vip");
+    if (!acct) { el.style.display = "none"; return; }
+    el.style.display = "";
+    if (!acct.vip) {
+      el.innerHTML = `<span class="bad">⚠ Webshare VIP expired</span> — downloads will fail until renewed.`;
+      return;
+    }
+    const d = acct.vip_days;
+    const threshold = parseInt($("set-vip-days").value, 10) || 7;
+    const cls = (d != null && d <= threshold) ? "warn" : "ok";
+    const until = acct.vip_until ? ` (until ${esc(String(acct.vip_until).split(" ")[0])})` : "";
+    el.innerHTML = `Webshare VIP: <span class="${cls}">${d ?? "?"} days left</span>${until}`;
   },
 
   renderAliases(aliases) {
@@ -1315,6 +1364,23 @@ $("set-maxdl-save").onclick = async () => {
     sresult("set-maxdl-result", true, "✓ Saved");
     App.refresh(true);
   } catch (e) { sresult("set-maxdl-result", false, e.message); }
+};
+$("set-notify-save").onclick = async () => {
+  const vip = parseInt($("set-vip-days").value, 10);
+  try {
+    await uiPost("settings", {
+      notify_urls: $("set-notify-urls").value,
+      notify_vip_days: isNaN(vip) ? 7 : Math.max(0, vip),
+    });
+    sresult("set-notify-result", true, "✓ Saved");
+  } catch (e) { sresult("set-notify-result", false, e.message); }
+};
+$("set-notify-test").onclick = async () => {
+  sresult("set-notify-result", true, "Sending…");
+  try {
+    const d = await uiPost("test-notify", { urls: $("set-notify-urls").value });
+    sresult("set-notify-result", d.ok, d.ok ? "✓ Test sent" : d.error);
+  } catch (e) { sresult("set-notify-result", false, e.message); }
 };
 
 const TABS = ["queue", "history", "search", "log", "help", "settings"];

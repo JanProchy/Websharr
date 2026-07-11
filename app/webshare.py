@@ -252,6 +252,25 @@ class WebshareClient:
             "type": _text(root, "type", ""),       # container, e.g. mkv
         }
 
+    async def account_status(self) -> dict:
+        """VIP/quota info from /user_data/ for monitoring and the dashboard."""
+        root = await self._authed_post("/user_data/", {})
+
+        def _int(tag: str) -> int:
+            try:
+                return int(_text(root, tag, "0") or 0)
+            except ValueError:
+                return 0
+
+        return {
+            "username": _text(root, "username", self._username),
+            "vip": _text(root, "vip", "0") == "1",
+            "vip_days": _int("vip_days"),
+            "vip_until": _text(root, "vip_until", ""),
+            "private_bytes": _int("private_bytes"),   # space used
+            "private_space": _int("private_space"),   # space total
+        }
+
     async def check_credentials(self) -> bool:
         try:
             await self._get_token(force=True)

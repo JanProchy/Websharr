@@ -71,7 +71,7 @@ class Job:
 
 class DownloadManager:
     def __init__(self, client: WebshareClient, complete_dir: Path, incomplete_dir: Path,
-                 state_file: Path, max_concurrent: int = 2):
+                 state_file: Path, max_concurrent: int = 2, notify=None):
         self._client = client
         self._complete_dir = complete_dir
         self._incomplete_dir = incomplete_dir
@@ -79,6 +79,8 @@ class DownloadManager:
         self._max_concurrent = max(1, int(max_concurrent))
         self._jobs: dict[str, Job] = {}
         self._tasks: dict[str, asyncio.Task] = {}
+        # Optional async callback (title, body) for failure notifications.
+        self._notify = notify
 
     @property
     def max_concurrent(self) -> int:
@@ -305,6 +307,11 @@ class DownloadManager:
             job.completed_ts = time.time()
             # Keep the partial file so a retry can resume; delete() cleans it up.
             logger.error("Download %s failed: %s", job.nzo_id, exc)
+            if self._notify:
+                try:
+                    await self._notify("Websharr: download failed", f"{job.job_name}\n{exc}")
+                except Exception:  # notifications must never break the manager
+                    logger.debug("failure notification errored", exc_info=True)
         finally:
             self._tasks.pop(job.nzo_id, None)
             if job.nzo_id in self._jobs:

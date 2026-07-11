@@ -1,6 +1,7 @@
 """Runtime configuration loaded from environment variables."""
 
 import os
+import re
 from pathlib import Path
 
 
@@ -15,6 +16,10 @@ class Config:
         # TMDB API Read Access Token (v4 bearer) for Czech-title lookups; the UI
         # value in settings.json overrides this.
         self.tmdb_token = os.environ.get("TMDB_TOKEN", "")
+        # Apprise notification URLs (comma/newline separated) and the VIP-expiry
+        # warning threshold in days; UI values override these.
+        self.notify_urls = [u.strip() for u in re.split(r"[,\n]", os.environ.get("NOTIFY_URLS", "")) if u.strip()]
+        self.notify_vip_days = int(os.environ.get("NOTIFY_VIP_DAYS", "7"))
         self.complete_dir = Path(os.environ.get("COMPLETE_DIR", "/downloads/complete"))
         self.incomplete_dir = Path(os.environ.get("INCOMPLETE_DIR", "/downloads/incomplete"))
         self.state_file = Path(os.environ.get("STATE_FILE", "/config/state.json"))

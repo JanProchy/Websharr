@@ -113,6 +113,19 @@ looking the request up in **TMDB**:
 The token is optional — without it, aliases still work and everything else runs
 as normal; you just lose the automatic Czech-title resolution.
 
+## Monitoring and notifications
+
+- **Dashboard widget.** `GET /stats?apikey=…` returns compact JSON (active/queued
+  counts, speed, failed count, Webshare VIP days) for a Homepage `customapi`
+  widget or similar.
+- **Prometheus.** `GET /metrics?apikey=…` exposes gauges
+  (`websharr_queue_downloading`, `websharr_download_speed_bytes`,
+  `websharr_history_failed`, `websharr_vip_days`, …) for Grafana.
+- **Notifications.** Add [Apprise](https://github.com/caronc/apprise) URLs
+  (Discord, Telegram, ntfy, Slack, Gotify, …) in **Settings → Notifications** or
+  via `NOTIFY_URLS`. Websharr alerts on a failed download, when Webshare is
+  unreachable, and when your VIP is about to expire (threshold `NOTIFY_VIP_DAYS`).
+
 ## Configuration (environment variables)
 
 | Variable | Default | Meaning |
@@ -120,6 +133,8 @@ as normal; you just lose the automatic Czech-title resolution.
 | `WEBSHARE_USERNAME` / `WEBSHARE_PASSWORD` | — | Webshare.cz credentials (initial default; editable in the UI) |
 | `WEBSHARR_API_KEY` | auto-generated | API key for the Newznab/SABnzbd endpoints; set to pin a fixed value |
 | `TMDB_TOKEN` | — | TMDB API Read Access Token for [Czech-title](#czech-titles-tmdb) lookups (UI value wins) |
+| `NOTIFY_URLS` | — | Apprise URLs (comma-separated) for failure/VIP notifications (UI value wins) |
+| `NOTIFY_VIP_DAYS` | `7` | Warn when Webshare VIP has this many days left or fewer |
 | `SETTINGS_FILE` | `/config/settings.json` | persisted settings (UI account, Webshare login, API key) |
 | `COMPLETE_DIR` | `/downloads/complete` | finished downloads (`<cat>/<name>/file`) |
 | `INCOMPLETE_DIR` | `/downloads/incomplete` | in-progress files |

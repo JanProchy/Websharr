@@ -11,6 +11,7 @@ so it never needs to be hard-coded in JS.
 
 import asyncio
 import logging
+import re
 import secrets
 import urllib.parse
 from dataclasses import asdict
@@ -21,6 +22,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from . import __version__
+from . import notify
 from .applog import records as log_records
 from .config import config
 from .downloads import DownloadManager, Job
@@ -178,7 +180,16 @@ async def ui_settings_get(request: Request):
         "aliases": settings.aliases,
         "tmdb_token_set": bool(settings.tmdb_token),
         "max_concurrent": request.app.state.downloads.max_concurrent,
+        "notify_urls": settings.notify_urls,
+        "notify_vip_days": settings.notify_vip_days,
+        "account": getattr(request.app.state, "account", None),
     }
+
+
+def _parse_urls(value) -> list[str]:
+    if isinstance(value, str):
+        value = re.split(r"[,\n]", value)
+    return [u.strip() for u in (value or []) if u and u.strip()]
 
 
 @router.post("/ui/api/aliases")
@@ -247,11 +258,32 @@ async def ui_settings_post(request: Request):
             return JSONResponse({"error": "max_concurrent must be a number"}, status_code=400)
         settings.max_concurrent = request.app.state.downloads.set_max_concurrent(n)
 
+    if "notify_urls" in body:
+        settings.notify_urls = _parse_urls(body.get("notify_urls"))
+    if "notify_vip_days" in body:
+        try:
+            settings.notify_vip_days = max(0, int(body.get("notify_vip_days")))
+        except (TypeError, ValueError):
+            return JSONResponse({"error": "notify_vip_days must be a number"}, status_code=400)
+
     settings.save()
     settings.apply()
     request.app.state.webshare.set_credentials(
         config.webshare_username, config.webshare_password, config.webshare_password_digest)
     return {"ok": True, "api_key": config.api_key}
+
+
+@router.post("/ui/api/test-notify")
+async def ui_test_notify(request: Request):
+    """Send a test notification to the given (or saved) Apprise URLs."""
+    if not _authorized(request):
+        return _unauthorized()
+    body = await request.json()
+    urls = _parse_urls(body.get("urls")) or settings.notify_urls
+    if not urls:
+        return {"ok": False, "error": "No notification URLs configured"}
+    ok = await notify.send(urls, "Websharr test", "Notifications are working ✅")
+    return {"ok": ok, "error": "" if ok else "Send failed — check the URL(s) and the Log tab"}
 
 
 @router.post("/ui/api/test-webshare")
@@ -305,6 +337,7 @@ async def ui_status(request: Request):
     if not _authorized(request):
         return _unauthorized()
     manager: DownloadManager = request.app.state.downloads
+    acct = getattr(request.app.state, "account", None) or {}
     return {
         "app": "websharr",
         "version": __version__,
@@ -313,6 +346,9 @@ async def ui_status(request: Request):
         "queue": len(manager.queue_jobs()),
         "history": len(manager.history_jobs()),
         "max_concurrent": manager.max_concurrent,
+        "vip": acct.get("vip"),
+        "vip_days": acct.get("vip_days"),
+        "vip_until": acct.get("vip_until"),
     }
 
 

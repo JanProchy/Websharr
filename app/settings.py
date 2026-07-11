@@ -60,6 +60,9 @@ class Settings:
         # Concurrent-download limit; env var is the initial default, editable in
         # the UI (Settings and the Queue page).
         self.max_concurrent: int = config.max_concurrent
+        # Apprise notification URLs + VIP-expiry warning threshold (days).
+        self.notify_urls: list[str] = list(config.notify_urls)
+        self.notify_vip_days: int = config.notify_vip_days
 
     @property
     def configured(self) -> bool:
@@ -91,6 +94,12 @@ class Settings:
             self.max_concurrent = max(1, int(data.get("max_concurrent") or config.max_concurrent))
         except (TypeError, ValueError):
             self.max_concurrent = config.max_concurrent
+        urls = data.get("notify_urls")
+        self.notify_urls = [u for u in urls if u] if isinstance(urls, list) else list(config.notify_urls)
+        try:
+            self.notify_vip_days = int(data.get("notify_vip_days") or config.notify_vip_days)
+        except (TypeError, ValueError):
+            self.notify_vip_days = config.notify_vip_days
 
     def save(self) -> None:
         path = config.settings_file
@@ -107,6 +116,8 @@ class Settings:
             "aliases": self.aliases,
             "tmdb_token": self.tmdb_token,
             "max_concurrent": self.max_concurrent,
+            "notify_urls": self.notify_urls,
+            "notify_vip_days": self.notify_vip_days,
         }
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         path.chmod(0o600)
