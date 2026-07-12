@@ -271,6 +271,37 @@ def test_file_episode():
     assert file_episode("Skvrna", "Skvrna - Bestie 1080p.mkv") is None
 
 
+def test_file_marker_reads_season():
+    from app.torznab import file_marker
+    # SxxEyy and 1x05 carry the season; a bare episode number does not.
+    assert file_marker("Zaklinac", "Zaklinac.S02E03.1080p.mkv") == (2, 3)
+    assert file_marker("Zaklinac", "Zaklinac 1x07 dabing.avi") == (1, 7)
+    assert file_marker("Skvrna", "Skvrna 05 - Bestie.mp4") == (None, 5)
+    assert file_marker("Skvrna", "Skvrna - Bestie 1080p.mkv") == (None, None)
+
+
+def test_search_drops_other_season_with_same_episode(client, fake_webshare, monkeypatch):
+    """A "DuckTales S01E02" search must not return "DuckTales.S02E02..." — the
+    episode number matches but the season does not (the real-life mis-grab:
+    Webshare fulltext matched the file on the show name alone, the old filter
+    only compared episode numbers, and the title rewrite then hid the S02)."""
+    from app import torznab
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "")
+    fake_webshare.fuzzy = True  # like Webshare: everything containing any term
+    fake_webshare.results = [
+        SearchResult("k1", "DuckTales.S01E02.Wronguay.CZECH.1080p.mkv", 2_000_000_000),
+        SearchResult("k2", "DuckTales.S02E02.The.Duck.Who.Would.Be.King.CZECH.1080p.mkv", 2_100_000_000),
+        SearchResult("k3", "DuckTales 2x02 dabing.avi", 1_000_000_000),
+    ]
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "q": "DuckTales", "season": "1", "ep": "2"})
+    root = ET.fromstring(resp.content)
+    titles = [it.findtext("title") for it in root.findall("channel/item")]
+    assert len(titles) == 1 and "Wronguay" in titles[0]
+
+
 def test_search_filters_garbage_and_wrong_episode(client, fake_webshare):
     fake_webshare.fuzzy = True  # Webshare returns everything, like real fulltext
     fake_webshare.results = [

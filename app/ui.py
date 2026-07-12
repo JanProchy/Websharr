@@ -31,7 +31,7 @@ from .torznab import (
     VIDEO_EXTENSIONS,
     build_queries,
     expand_titles,
-    file_episode,
+    file_marker,
     matches_query,
     parse_query,
     relevance,
@@ -449,6 +449,7 @@ async def ui_search(request: Request):
     limit = min(int(params.get("limit", str(config.search_limit)) or config.search_limit), 100)
 
     want_ep = int(ep) if (t == "tvsearch" and ep and str(ep).isdigit()) else None
+    want_season = int(season) if (t == "tvsearch" and season and str(season).isdigit()) else None
     client = request.app.state.webshare
     seen: set[str] = set()
     merged: list[SearchResult] = []
@@ -463,8 +464,12 @@ async def ui_search(request: Request):
                 continue
             if not matches_query(titles, r.name):
                 continue  # drop Webshare's loose non-matching fulltext hits
-            if want_ep is not None and file_episode(titles, r.name) != want_ep:
-                continue  # OR-based fulltext returns every episode; keep the asked one
+            if want_ep is not None or want_season is not None:
+                fs, fe = file_marker(titles, r.name)
+                if want_ep is not None and fe != want_ep:
+                    continue  # OR fulltext returns every episode; keep the asked one
+                if want_season is not None and fs is not None and fs != want_season:
+                    continue  # an S02E02 file is not the requested S01E02
             seen.add(r.ident)
             merged.append(r)
 
