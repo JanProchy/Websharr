@@ -97,15 +97,17 @@ def test_expand_titles_uses_tmdb(monkeypatch):
 
     # exact id lookup wins; the original title is added, display is canonical,
     # and the original language maps to the *arr language name.
-    titles, display, language = asyncio.run(
+    titles, display, language, czech = asyncio.run(
         torznab.expand_titles("tvsearch", "Sleepers", "5000", tvdbid="358583"))
     assert "Bez vědomí" in titles and display == "The Sleepers" and language == "Czech"
     # fuzzy name lookup when no id
-    titles, display, language = asyncio.run(torznab.expand_titles("tvsearch", "Sleepers", "5000"))
+    titles, display, language, czech = asyncio.run(
+        torznab.expand_titles("tvsearch", "Sleepers", "5000"))
     assert "Bez vědomí" in titles and display == "The Sleepers" and language == "Czech"
     # no token -> just the query, no language
     monkeypatch.setattr(settings, "tmdb_token", "")
-    assert asyncio.run(torznab.expand_titles("tvsearch", "Sleepers", "5000")) == (["Sleepers"], "Sleepers", "")
+    assert asyncio.run(torznab.expand_titles("tvsearch", "Sleepers", "5000")) == \
+        (["Sleepers"], "Sleepers", "", [])
 
 
 def test_expand_titles_id_only_uses_canonical(monkeypatch):
@@ -126,10 +128,10 @@ def test_expand_titles_id_only_uses_canonical(monkeypatch):
 
     monkeypatch.setattr(torznab, "tmdb_lookup_by_id", by_id)
     monkeypatch.setattr(torznab, "tmdb_lookup", by_name)
-    titles, display, language = asyncio.run(
+    titles, display, language, czech = asyncio.run(
         torznab.expand_titles("tvsearch", "", "5000", tvdbid="414489", imdbid="16532444"))
     assert titles == ["Devadesátky"]        # canonical name searched, no empty string
-    assert display == "Devadesátky" and language == "Czech"
+    assert display == "Devadesátky" and language == "Czech" and czech == []
 
 
 def test_expand_titles_adds_czech_alt_titles(monkeypatch):
@@ -152,10 +154,11 @@ def test_expand_titles_adds_czech_alt_titles(monkeypatch):
 
     monkeypatch.setattr(torznab, "tmdb_lookup_by_id", by_id)
     monkeypatch.setattr(torznab, "tmdb_lookup", by_name)
-    titles, display, language = asyncio.run(
+    titles, display, language, czech = asyncio.run(
         torznab.expand_titles("tvsearch", "DuckTales", "5000", tvdbid="75931"))
     assert titles == ["DuckTales", "Kačeří příběhy", "My z Kačerova"]
     assert display == "DuckTales" and language == "English"
+    assert czech == ["Kačeří příběhy", "My z Kačerova"]
     # A dubbed file named after the Czech title now matches and parses.
     assert torznab.matches_query(titles, "Kaceri.pribehy.S01E01.CZ.Dabing.mkv")
     assert torznab.file_episode(titles, "Kaceri.pribehy.S01E01.CZ.Dabing.mkv") == 1
@@ -176,6 +179,12 @@ def test_dub_language_and_lang_name():
     assert dub_language("Film.2020.CZ.SK.dabing.mkv") == "Czech"    # CZ present -> Czech
     assert dub_language("Movie.2020.1080p.CZ.titulky.mkv") == ""    # subtitles, not a dub
     assert dub_language("Movie.2020.1080p.BluRay.x264.mkv") == ""
+    # A full CZECH/SLOVAK word marks the audio language (scene convention)...
+    assert dub_language("DuckTales.S01E01.SLOVAK.1080p.AI.WEB.H264-GRP.mkv") == "Slovak"
+    assert dub_language("Movie.2020.CZECH.1080p.WEB.mkv") == "Czech"
+    # ...but not when the name marks subtitles, and bare CZ/SK stays ambiguous.
+    assert dub_language("Movie.2020.CZECH.subs.1080p.mkv") == ""
+    assert dub_language("Movie.2020.1080p.CZ.mkv") == ""
     assert lang_name("en") == "English"
     assert lang_name("cs") == "Czech"
     assert lang_name("") == "" and lang_name("xx") == ""
@@ -211,6 +220,40 @@ def test_feed_tags_language_original_and_dub(client, fake_webshare, monkeypatch)
     langs = list(by_ident.values())
     assert "English" in langs   # original-audio file tagged with the original language
     assert "Czech" in langs     # dubbed file tagged with the dub language
+
+
+def test_feed_tags_czech_for_file_named_after_czech_title(client, fake_webshare, monkeypatch):
+    """A file named after the Czech dub title is a Czech release even without a
+    "dabing" marker in the name — it must not inherit the English original tag."""
+    from app import torznab
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "tok")
+
+    async def by_name(token, kind, q):
+        return ("DuckTales", "", "en", ("Kačeří příběhy",))
+
+    async def by_id(token, kind, tmdbid=None, imdbid=None, tvdbid=None):
+        return None
+
+    monkeypatch.setattr(torznab, "tmdb_lookup", by_name)
+    monkeypatch.setattr(torznab, "tmdb_lookup_by_id", by_id)
+    fake_webshare.fuzzy = True  # real Webshare fulltext matches diacritics-insensitively
+    fake_webshare.results = [
+        SearchResult("d1", "DuckTales.S01E01.1080p.WEB.mkv", 2_000_000_000),
+        SearchResult("d2", "Kaceri pribehy S01E01 Neopoustejte lod.mkv", 2_100_000_000),
+    ]
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "q": "DuckTales", "season": "1", "ep": "1"})
+    root = ET.fromstring(resp.content)
+    by_title = {}
+    for it in root.findall("channel/item"):
+        attrs = {a.get("name"): a.get("value") for a in it.findall(f"{NZNS}attr")}
+        by_title[it.findtext("title")] = attrs.get("language")
+    assert sorted(by_title.values()) == ["Czech", "English"]
+    for title, lang in by_title.items():
+        if "Kaceri" in title:
+            assert lang == "Czech"
 
 
 def test_release_title_asciified():

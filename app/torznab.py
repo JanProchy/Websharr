@@ -69,13 +69,20 @@ def lang_name(code: str) -> str:
 # original audio with subtitles ("titulky"). Used to tag a dubbed release with
 # the dub language instead of the title's original language.
 _DUB_RE = re.compile(r"\bdab(?:ing|ovan\w*|\b)", re.IGNORECASE)
-_SK_RE = re.compile(r"\b(?:sk|slovensk\w*)\b", re.IGNORECASE)
+_SK_RE = re.compile(r"\b(?:sk|slovensk\w*|slovak)\b", re.IGNORECASE)
 _CZ_RE = re.compile(r"\b(?:cz|cesk\w*|česk\w*|czech)\b", re.IGNORECASE)
+# A full "CZECH"/"SLOVAK" word names the audio language (scene convention,
+# e.g. "...SLOVAK.1080p.WEB..."); a bare "CZ"/"SK" is too ambiguous (often
+# subs or region). Doesn't apply when the name marks subtitles instead.
+_LANG_WORD_RE = re.compile(r"\b(?:czech|slovak)\b", re.IGNORECASE)
+_SUBS_RE = re.compile(r"\b(?:titulky|tit|subs?|subtitles)\b", re.IGNORECASE)
 
 
 def dub_language(name: str) -> str:
     """"Czech"/"Slovak" when the file name signals a CZ/SK dub, else ""."""
-    if not _DUB_RE.search(name or ""):
+    name = name or ""
+    if not _DUB_RE.search(name) and \
+            not (_LANG_WORD_RE.search(name) and not _SUBS_RE.search(name)):
         return ""
     # A dub marked SK (and not CZ) is Slovak; otherwise assume Czech (the default
     # on Webshare, where a bare "Dabing" is Czech).
@@ -286,8 +293,8 @@ def _tmdb_kind(t: str, cat: str | None) -> str:
 
 async def expand_titles(t: str, q: str, cat: str | None, *, tvdbid: str | None = None,
                         imdbid: str | None = None, tmdbid: str | None = None
-                        ) -> tuple[list[str], str, str]:
-    """Return (search_titles, display_title, original_language).
+                        ) -> tuple[list[str], str, str, list[str]]:
+    """Return (search_titles, display_title, original_language, czech_titles).
 
     search_titles: the query, manual-alias titles, the TMDB original title, and
     the TMDB CZ alternative titles (the Czech dub name of an English-origin
@@ -297,12 +304,16 @@ async def expand_titles(t: str, q: str, cat: str | None, *, tvdbid: str | None =
     shows "The Sleepers" instead of whatever alias/query happened to match.
     original_language: the title's language name (from TMDB) used to tag the
     release feed, or "" when unknown; lets *arr apply an original-language policy.
+    czech_titles: the subset of search_titles that are Czech dub names — a file
+    named after one is a Czech release even without a "dabing" marker, so the
+    feed tags it Czech instead of the original language.
     """
     # Aliases stay keyed on the *arr text query (interactive search); an ID-only
     # automatic search has no q, so we lean on the TMDB id lookup below instead.
     titles = ([q] if q and q.strip() else []) + alias_titles(q, settings.aliases)
     display = q
     language = ""
+    czech_titles: list[str] = []
     if settings.tmdb_token:
         kind = _tmdb_kind(t, cat)
         res = None
@@ -324,8 +335,9 @@ async def expand_titles(t: str, q: str, cat: str | None, *, tvdbid: str | None =
                 if extra and normalize_text(extra) not in seen:
                     titles.append(extra)
                     seen.add(normalize_text(extra))
+            czech_titles = list(czech)
             language = lang_name(lang)
-    return titles, display, language
+    return titles, display, language, czech_titles
 
 
 def matches_query(query, name: str) -> bool:
@@ -384,7 +396,7 @@ def relevance(queries: list[str], name: str) -> float:
 def _render_feed(request: Request, results: list[SearchResult], category: str,
                  *, query: str | None = None, season: str | None = None,
                  ep: str | None = None, heights: dict[str, int] | None = None,
-                 language: str = "") -> Response:
+                 language: str = "", czech_titles: list[str] | None = None) -> Response:
     heights = heights or {}
     ET.register_namespace("torznab", TORZNAB_NS)
     ET.register_namespace("newznab", NEWZNAB_NS)
@@ -427,8 +439,11 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
         })
         # A CZ/SK dub overrides the title's original language (a dubbed release
         # is in the dub language, not the original), so *arr's original-language
-        # policy grabs the original audio and skips the dub.
-        item_lang = dub_language(r.name) or language
+        # policy grabs the original audio and skips the dub. A file named after
+        # the Czech dub title ("Kačeří příběhy ...") is a Czech release even
+        # when it carries no "dabing" marker.
+        item_lang = dub_language(r.name) or \
+            ("Czech" if czech_titles and matches_query(czech_titles, r.name) else language)
         # Emit attrs in both namespaces so the feed parses whether Sonarr/Radarr
         # treats it as Newznab (usenet — the correct choice) or Torznab.
         for ns in (NEWZNAB_NS, TORZNAB_NS):
@@ -459,7 +474,7 @@ async def torznab_api(request: Request):
     # A *arr query may match a Webshare/CZ title (alias map or TMDB lookup);
     # search all and accept files matching any of them. `display` is the nice
     # title used to prefix the release name.
-    titles, display, language = await expand_titles(
+    titles, display, language, czech_titles = await expand_titles(
         t, q, params.get("cat"), tvdbid=params.get("tvdbid"),
         imdbid=params.get("imdbid"), tmdbid=params.get("tmdbid"))
     queries = []
@@ -512,7 +527,7 @@ async def torznab_api(request: Request):
     heights = await _resolutions(client, shown)
     return _render_feed(request, shown, category, heights=heights,
                         query=display, season=(season if t == "tvsearch" else None), ep=ep,
-                        language=language)
+                        language=language, czech_titles=czech_titles)
 
 
 @router.get("/torznab/nzb/{ident}")
