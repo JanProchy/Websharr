@@ -293,8 +293,8 @@ def _tmdb_kind(t: str, cat: str | None) -> str:
 
 async def expand_titles(t: str, q: str, cat: str | None, *, tvdbid: str | None = None,
                         imdbid: str | None = None, tmdbid: str | None = None
-                        ) -> tuple[list[str], str, str, list[str]]:
-    """Return (search_titles, display_title, original_language, czech_titles).
+                        ) -> tuple[list[str], str, str, list[str], int]:
+    """Return (search_titles, display_title, original_language, czech_titles, year).
 
     search_titles: the query, manual-alias titles, the TMDB original title, and
     the TMDB CZ alternative titles (the Czech dub name of an English-origin
@@ -307,6 +307,8 @@ async def expand_titles(t: str, q: str, cat: str | None, *, tvdbid: str | None =
     czech_titles: the subset of search_titles that are Czech dub names — a file
     named after one is a Czech release even without a "dabing" marker, so the
     feed tags it Czech instead of the original language.
+    year: the title's first-air/release year from TMDB (0 unknown), used to drop
+    files of a same-named other title (see year_conflict).
     """
     # Aliases stay keyed on the *arr text query (interactive search); an ID-only
     # automatic search has no q, so we lean on the TMDB id lookup below instead.
@@ -314,6 +316,7 @@ async def expand_titles(t: str, q: str, cat: str | None, *, tvdbid: str | None =
     display = q
     language = ""
     czech_titles: list[str] = []
+    year = 0
     if settings.tmdb_token:
         kind = _tmdb_kind(t, cat)
         res = None
@@ -322,7 +325,7 @@ async def expand_titles(t: str, q: str, cat: str | None, *, tvdbid: str | None =
         if not res:
             res = await tmdb_lookup(settings.tmdb_token, kind, q)
         if res:
-            disp, orig, lang, czech = res
+            disp, orig, lang, czech, year = res
             seen = {normalize_text(x) for x in titles}
             if disp:
                 display = disp  # prefix releases with the canonical title
@@ -337,7 +340,23 @@ async def expand_titles(t: str, q: str, cat: str | None, *, tvdbid: str | None =
                     seen.add(normalize_text(extra))
             czech_titles = list(czech)
             language = lang_name(lang)
-    return titles, display, language, czech_titles
+    return titles, display, language, czech_titles, year
+
+
+def year_conflict(name: str, year: int) -> bool:
+    """True when every year token in the file name contradicts the title's year.
+
+    Two different titles can share a Czech name — the 1987 and 2017 DuckTales
+    are both "Kačeří příběhy" on Webshare — and such files often disambiguate
+    only by a year in the name ("Kaceri pribehy 2017 ..."). ±1 tolerated
+    (releases are often stamped a year off); resolution tokens (1080, 2160)
+    fall outside the 1900-2099 window.
+    """
+    if not year:
+        return False
+    years = [int(t) for t in normalize_text(name).split()
+             if t.isdigit() and len(t) == 4 and 1900 <= int(t) <= 2099]
+    return bool(years) and all(abs(y - year) > 1 for y in years)
 
 
 def matches_query(query, name: str) -> bool:
@@ -482,7 +501,7 @@ async def torznab_api(request: Request):
     # A *arr query may match a Webshare/CZ title (alias map or TMDB lookup);
     # search all and accept files matching any of them. `display` is the nice
     # title used to prefix the release name.
-    titles, display, language, czech_titles = await expand_titles(
+    titles, display, language, czech_titles, year = await expand_titles(
         t, q, params.get("cat"), tvdbid=params.get("tvdbid"),
         imdbid=params.get("imdbid"), tmdbid=params.get("tmdbid"))
     queries = []
@@ -525,6 +544,8 @@ async def torznab_api(request: Request):
                 continue
             if not matches_query(titles, r.name):
                 continue  # drop Webshare's loose non-matching fulltext hits
+            if year_conflict(r.name, year):
+                continue  # same-named other title (DuckTales 1987 vs 2017)
             if want_ep is not None or want_season is not None:
                 fs, fe = file_marker(titles, r.name)
                 if want_ep is not None and fe != want_ep:

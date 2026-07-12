@@ -87,27 +87,27 @@ def test_expand_titles_uses_tmdb(monkeypatch):
     monkeypatch.setattr(settings, "tmdb_token", "tok")
 
     async def by_id(token, kind, tmdbid=None, imdbid=None, tvdbid=None):
-        return ("The Sleepers", "Bez vědomí", "cs", ()) if tvdbid == "358583" else None
+        return ("The Sleepers", "Bez vědomí", "cs", (), 2019) if tvdbid == "358583" else None
 
     async def by_name(token, kind, q):
-        return ("The Sleepers", "Bez vědomí", "cs", ()) if "sleepers" in q.lower() else None
+        return ("The Sleepers", "Bez vědomí", "cs", (), 2019) if "sleepers" in q.lower() else None
 
     monkeypatch.setattr(torznab, "tmdb_lookup_by_id", by_id)
     monkeypatch.setattr(torznab, "tmdb_lookup", by_name)
 
     # exact id lookup wins; the original title is added, display is canonical,
     # and the original language maps to the *arr language name.
-    titles, display, language, czech = asyncio.run(
+    titles, display, language, czech, year = asyncio.run(
         torznab.expand_titles("tvsearch", "Sleepers", "5000", tvdbid="358583"))
     assert "Bez vědomí" in titles and display == "The Sleepers" and language == "Czech"
     # fuzzy name lookup when no id
-    titles, display, language, czech = asyncio.run(
+    titles, display, language, czech, year = asyncio.run(
         torznab.expand_titles("tvsearch", "Sleepers", "5000"))
     assert "Bez vědomí" in titles and display == "The Sleepers" and language == "Czech"
     # no token -> just the query, no language
     monkeypatch.setattr(settings, "tmdb_token", "")
     assert asyncio.run(torznab.expand_titles("tvsearch", "Sleepers", "5000")) == \
-        (["Sleepers"], "Sleepers", "", [])
+        (["Sleepers"], "Sleepers", "", [], 0)
 
 
 def test_expand_titles_id_only_uses_canonical(monkeypatch):
@@ -121,17 +121,18 @@ def test_expand_titles_id_only_uses_canonical(monkeypatch):
 
     async def by_id(token, kind, tmdbid=None, imdbid=None, tvdbid=None):
         # CZ-origin show: name == original_name, so original comes back empty.
-        return ("Devadesátky", "", "cs", ()) if tvdbid == "414489" else None
+        return ("Devadesátky", "", "cs", (), 2022) if tvdbid == "414489" else None
 
     async def by_name(token, kind, q):
         return None
 
     monkeypatch.setattr(torznab, "tmdb_lookup_by_id", by_id)
     monkeypatch.setattr(torznab, "tmdb_lookup", by_name)
-    titles, display, language, czech = asyncio.run(
+    titles, display, language, czech, year = asyncio.run(
         torznab.expand_titles("tvsearch", "", "5000", tvdbid="414489", imdbid="16532444"))
     assert titles == ["Devadesátky"]        # canonical name searched, no empty string
     assert display == "Devadesátky" and language == "Czech" and czech == []
+    assert year == 2022
 
 
 def test_expand_titles_adds_czech_alt_titles(monkeypatch):
@@ -146,7 +147,7 @@ def test_expand_titles_adds_czech_alt_titles(monkeypatch):
 
     async def by_id(token, kind, tmdbid=None, imdbid=None, tvdbid=None):
         if tvdbid == "75931":
-            return ("DuckTales", "", "en", ("Kačeří příběhy", "My z Kačerova"))
+            return ("DuckTales", "", "en", ("Kačeří příběhy", "My z Kačerova"), 1987)
         return None
 
     async def by_name(token, kind, q):
@@ -154,11 +155,11 @@ def test_expand_titles_adds_czech_alt_titles(monkeypatch):
 
     monkeypatch.setattr(torznab, "tmdb_lookup_by_id", by_id)
     monkeypatch.setattr(torznab, "tmdb_lookup", by_name)
-    titles, display, language, czech = asyncio.run(
+    titles, display, language, czech, year = asyncio.run(
         torznab.expand_titles("tvsearch", "DuckTales", "5000", tvdbid="75931"))
     assert titles == ["DuckTales", "Kačeří příběhy", "My z Kačerova"]
     assert display == "DuckTales" and language == "English"
-    assert czech == ["Kačeří příběhy", "My z Kačerova"]
+    assert czech == ["Kačeří příběhy", "My z Kačerova"] and year == 1987
     # A dubbed file named after the Czech title now matches and parses.
     assert torznab.matches_query(titles, "Kaceri.pribehy.S01E01.CZ.Dabing.mkv")
     assert torznab.file_episode(titles, "Kaceri.pribehy.S01E01.CZ.Dabing.mkv") == 1
@@ -199,7 +200,7 @@ def test_feed_tags_language_original_and_dub(client, fake_webshare, monkeypatch)
     monkeypatch.setattr(settings, "tmdb_token", "tok")
 
     async def by_name(token, kind, q):
-        return ("The Sleepers", "", "en", ())  # pretend an English-original title
+        return ("The Sleepers", "", "en", (), 2019)  # pretend an English-original title
 
     async def by_id(token, kind, tmdbid=None, imdbid=None, tvdbid=None):
         return None
@@ -231,7 +232,7 @@ def test_feed_tags_czech_for_file_named_after_czech_title(client, fake_webshare,
     monkeypatch.setattr(settings, "tmdb_token", "tok")
 
     async def by_name(token, kind, q):
-        return ("DuckTales", "", "en", ("Kačeří příběhy",))
+        return ("DuckTales", "", "en", ("Kačeří příběhy",), 1987)
 
     async def by_id(token, kind, tmdbid=None, imdbid=None, tvdbid=None):
         return None
@@ -269,6 +270,17 @@ def test_file_episode():
     assert file_episode("Zaklinac", "Zaklinac 1x07 dabing.avi") == 7
     # 1080/2160 must not be mistaken for an episode.
     assert file_episode("Skvrna", "Skvrna - Bestie 1080p.mkv") is None
+
+
+def test_year_conflict():
+    from app.torznab import year_conflict
+    # The 2017 reboot file must not satisfy the 1987 series (same Czech name).
+    assert year_conflict("Kaceri pribehy 2017 04 Slamastika s desetnikem.mkv", 1987)
+    assert not year_conflict("My z Kacerova (1987) Studena kachna 960p.mkv", 1987)
+    assert not year_conflict("Kaceri pribehy 05 - Bez roku.mkv", 1987)   # no year token
+    assert not year_conflict("DuckTales.S01E02.1080p.mkv", 1987)         # 1080 != year
+    assert not year_conflict("Film.2018.1080p.mkv", 2019)                # ±1 tolerated
+    assert not year_conflict("Kaceri pribehy 2017 04.mkv", 0)            # unknown year
 
 
 def test_file_marker_reads_season():

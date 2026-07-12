@@ -13,12 +13,14 @@ TMDB *alternative title* (country CZ), so those are fetched too and returned
 as extra search terms.
 
 Returns are cached in-memory (including negatives) — the same query repeats a
-lot. Each result is a (display, original, language, czech_titles) tuple:
+lot. Each result is a (display, original, language, czech_titles, year) tuple:
 `original` is "" when it equals the display title (i.e. not foreign);
 `language` is the title's TMDB `original_language` (ISO 639-1, e.g. "en"/"cs"),
 used to tag the release so Sonarr/Radarr can honour an "original language"
 policy; `czech_titles` are the CZ alternative titles (empty for a Czech-origin
-title, whose original already is the Czech name).
+title, whose original already is the Czech name); `year` is the first-air/release
+year (0 when unknown), used to reject files of a same-named other title — the
+1987 and 2017 DuckTales are both "Kačeří příběhy" on Webshare.
 """
 
 import logging
@@ -28,7 +30,7 @@ import httpx
 logger = logging.getLogger("websharr.tmdb")
 
 _BASE = "https://api.themoviedb.org/3"
-_cache: dict[tuple[str, str], tuple[str, str, str, tuple[str, ...]] | None] = {}
+_cache: dict[tuple[str, str], tuple[str, str, str, tuple[str, ...], int] | None] = {}
 
 
 def _headers(token: str) -> dict:
@@ -95,8 +97,16 @@ async def _alt_titles(client, kind: str, tmdb_id) -> list:
         return []
 
 
-async def _resolve(client, entry: dict, kind: str) -> tuple[str, str, str, tuple[str, ...]]:
-    """(display, original, language, czech_titles) for a TMDB entry.
+def _year(entry: dict) -> int:
+    date = entry.get("first_air_date") or entry.get("release_date") or ""
+    try:
+        return int(str(date)[:4])
+    except ValueError:
+        return 0
+
+
+async def _resolve(client, entry: dict, kind: str) -> tuple[str, str, str, tuple[str, ...], int]:
+    """(display, original, language, czech_titles, year) for a TMDB entry.
 
     When the canonical name is itself the foreign original (no distinct English
     name), swap in the English alternative title as the display — that's what
@@ -121,11 +131,12 @@ async def _resolve(client, entry: dict, kind: str) -> tuple[str, str, str, tuple
         if need_czech:
             known = {disp.casefold(), orig.casefold()}
             czech = [t for t in _pick_czech(alts) if t.casefold() not in known]
-    return disp, orig, lang, tuple(czech)
+    return disp, orig, lang, tuple(czech), _year(entry)
 
 
-async def lookup(token: str, kind: str, query: str) -> tuple[str, str, str, tuple[str, ...]] | None:
-    """(display, original, language, czech_titles) for a TMDB `tv`/`movie` matched by name.
+async def lookup(token: str, kind: str, query: str
+                 ) -> tuple[str, str, str, tuple[str, ...], int] | None:
+    """(display, original, language, czech_titles, year) for a TMDB `tv`/`movie` matched by name.
 
     Fulltext — prefers the first result with a foreign original title (the one
     we want) for the display/original names; can still pick wrong for ambiguous
@@ -157,7 +168,7 @@ async def lookup(token: str, kind: str, query: str) -> tuple[str, str, str, tupl
         logger.warning("TMDB search %r (%s) failed: %s", query, kind, exc)
         return None
     _cache[key] = found
-    logger.info("TMDB: %s %r -> display=%r original=%r lang=%r czech=%r",
+    logger.info("TMDB: %s %r -> display=%r original=%r lang=%r czech=%r year=%r",
                 kind, query, *found)
     return found
 
@@ -173,8 +184,8 @@ def _imdb_id(imdbid) -> str:
 
 
 async def lookup_by_id(token: str, kind: str, tmdbid=None, imdbid=None,
-                       tvdbid=None) -> tuple[str, str, str, tuple[str, ...]] | None:
-    """(display, original, language, czech_titles) from an exact external id.
+                       tvdbid=None) -> tuple[str, str, str, tuple[str, ...], int] | None:
+    """(display, original, language, czech_titles, year) from an exact external id.
 
     Tries each supplied id in turn — direct TMDB id, then TVDB, then IMDb — and
     uses the first that resolves, so a Sonarr search carrying both tvdbid and
@@ -199,6 +210,7 @@ async def lookup_by_id(token: str, kind: str, tmdbid=None, imdbid=None,
     entry: dict = {}
     disp = orig = lang = ""
     czech: tuple[str, ...] = ()
+    year = 0
     try:
         async with httpx.AsyncClient(timeout=10.0, headers=_headers(token)) as client:
             if tmdbid:
@@ -210,14 +222,14 @@ async def lookup_by_id(token: str, kind: str, tmdbid=None, imdbid=None,
             if not entry and imdb:
                 entry = await _find(client, imdb, "imdb_id")
             if entry:
-                disp, orig, lang, czech = await _resolve(client, entry, kind)
+                disp, orig, lang, czech, year = await _resolve(client, entry, kind)
     except (httpx.HTTPError, KeyError, ValueError) as exc:
         logger.warning("TMDB id lookup %s (tmdb=%s tvdb=%s imdb=%s) failed: %s",
                        kind, tmdbid, tvdbid, imdb, exc)
         return None
-    found = (disp, orig, lang, czech) if (disp or orig or lang) else None
+    found = (disp, orig, lang, czech, year) if (disp or orig or lang) else None
     _cache[key] = found
     if found:
-        logger.info("TMDB: %s id(tmdb=%s tvdb=%s imdb=%s) -> display=%r original=%r lang=%r czech=%r",
-                    kind, tmdbid, tvdbid, imdb, disp, orig, lang, czech)
+        logger.info("TMDB: %s id(tmdb=%s tvdb=%s imdb=%s) -> display=%r original=%r lang=%r czech=%r year=%r",
+                    kind, tmdbid, tvdbid, imdb, disp, orig, lang, czech, year)
     return found

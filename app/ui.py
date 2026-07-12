@@ -32,6 +32,7 @@ from .torznab import (
     build_queries,
     expand_titles,
     file_marker,
+    year_conflict,
     matches_query,
     parse_query,
     relevance,
@@ -435,7 +436,7 @@ async def ui_search(request: Request):
         return JSONResponse({"error": f"Unknown search type '{t}'"}, status_code=400)
 
     t, q, season, ep = parse_query(t, params.get("q", ""), params.get("season"), params.get("ep"))
-    titles, display, _language, _czech = await expand_titles(
+    titles, display, _language, _czech, year = await expand_titles(
         t, q, params.get("cat"), tvdbid=params.get("tvdbid"),
         imdbid=params.get("imdbid"), tmdbid=params.get("tmdbid"))
     queries = []
@@ -464,6 +465,8 @@ async def ui_search(request: Request):
                 continue
             if not matches_query(titles, r.name):
                 continue  # drop Webshare's loose non-matching fulltext hits
+            if year_conflict(r.name, year):
+                continue  # same-named other title (DuckTales 1987 vs 2017)
             if want_ep is not None or want_season is not None:
                 fs, fe = file_marker(titles, r.name)
                 if want_ep is not None and fe != want_ep:

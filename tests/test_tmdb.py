@@ -47,7 +47,7 @@ def test_resolve_swaps_english_for_foreign_origin():
     entry = {"id": 155277, "name": "Devadesátky", "original_name": "Devadesátky",
              "original_language": "cs"}
     client = _Client([{"iso_3166_1": "GB", "title": "Nineties"}])
-    disp, orig, lang, czech = asyncio.run(tmdb._resolve(client, entry, "tv"))
+    disp, orig, lang, czech, year = asyncio.run(tmdb._resolve(client, entry, "tv"))
     assert disp == "Nineties" and orig == "Devadesátky" and lang == "cs"
     assert czech == ()  # Czech-origin: the original already is the Czech name
 
@@ -61,7 +61,7 @@ def test_resolve_keeps_existing_english_name():
 
     entry = {"id": 1, "name": "The Sleepers", "original_name": "Bez vědomí",
              "original_language": "cs"}
-    disp, orig, lang, czech = asyncio.run(tmdb._resolve(_Boom(), entry, "tv"))
+    disp, orig, lang, czech, year = asyncio.run(tmdb._resolve(_Boom(), entry, "tv"))
     assert disp == "The Sleepers" and orig == "Bez vědomí" and lang == "cs"
     assert czech == ()
 
@@ -70,17 +70,19 @@ def test_resolve_english_show_picks_czech_alt_titles():
     # English-origin show dubbed under Czech names: the CZ alternative titles
     # become extra search terms; display/original stay untouched.
     entry = {"id": 720, "name": "DuckTales", "original_name": "DuckTales",
-             "original_language": "en"}
+             "original_language": "en", "first_air_date": "1987-09-18"}
     client = _Client([{"iso_3166_1": "CZ", "title": "Kačeří příběhy"},
                       {"iso_3166_1": "CZ", "title": "My z Kačerova"},
                       {"iso_3166_1": "US", "title": "Disney's DuckTales"}])
-    disp, orig, lang, czech = asyncio.run(tmdb._resolve(client, entry, "tv"))
+    disp, orig, lang, czech, year = asyncio.run(tmdb._resolve(client, entry, "tv"))
     assert disp == "DuckTales" and orig == "" and lang == "en"
     assert czech == ("Kačeří příběhy", "My z Kačerova")
+    assert year == 1987
 
 
 def test_resolve_english_show_without_czech_titles():
     entry = {"id": 2, "name": "The Office", "original_name": "The Office",
              "original_language": "en"}
-    disp, orig, lang, czech = asyncio.run(tmdb._resolve(_Client([]), entry, "tv"))
+    disp, orig, lang, czech, year = asyncio.run(tmdb._resolve(_Client([]), entry, "tv"))
     assert disp == "The Office" and orig == "" and lang == "en" and czech == ()
+    assert year == 0  # no air date in the entry
