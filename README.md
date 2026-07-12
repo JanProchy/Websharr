@@ -103,9 +103,13 @@ looking the request up in **TMDB**:
   `TMDB_TOKEN` environment variable (the UI value wins).
 - For each query Websharr finds the title in TMDB and searches Webshare under its
   **original title** (`original_name` / `original_title`) — that's where the
-  Czech name lives — while keeping the canonical title for the release name so
-  *arr shows and imports it correctly (e.g. it grabs `Bez vědomí` but reports
-  `The Sleepers`). ID-based lookups are tried first, then a name match.
+  Czech name of a Czech show lives — while keeping the canonical title for the
+  release name so *arr shows and imports it correctly (e.g. it grabs `Bez
+  vědomí` but reports `The Sleepers`). ID-based lookups are tried first, then a
+  name match.
+- For foreign titles Websharr additionally searches the **Czech alternative
+  titles** from TMDB — the name a Czech dub is filed under (e.g. `Kačeří
+  příběhy` for *DuckTales*), which is not the original title.
 - **Search aliases** (Settings) are a manual override: map a title to the exact
   Webshare name yourself for the cases where TMDB has no Czech title or picks the
   wrong match.

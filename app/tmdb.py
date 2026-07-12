@@ -7,11 +7,18 @@ and the original one (`original_name`/`original_title`). We use the original as
 an extra search term, and the canonical one as the release-name prefix so
 Sonarr shows "The Sleepers", not whatever alias happened to match.
 
+Many titles are English-origin but dubbed on Webshare under a Czech name
+("DuckTales" -> "Kačeří příběhy"); that name is not the original title but a
+TMDB *alternative title* (country CZ), so those are fetched too and returned
+as extra search terms.
+
 Returns are cached in-memory (including negatives) — the same query repeats a
-lot. Each result is a (display, original, language) tuple: `original` is "" when
-it equals the display title (i.e. not foreign); `language` is the title's TMDB
-`original_language` (ISO 639-1, e.g. "en"/"cs"), used to tag the release so
-Sonarr/Radarr can honour an "original language" policy.
+lot. Each result is a (display, original, language, czech_titles) tuple:
+`original` is "" when it equals the display title (i.e. not foreign);
+`language` is the title's TMDB `original_language` (ISO 639-1, e.g. "en"/"cs"),
+used to tag the release so Sonarr/Radarr can honour an "original language"
+policy; `czech_titles` are the CZ alternative titles (empty for a Czech-origin
+title, whose original already is the Czech name).
 """
 
 import logging
@@ -21,7 +28,7 @@ import httpx
 logger = logging.getLogger("websharr.tmdb")
 
 _BASE = "https://api.themoviedb.org/3"
-_cache: dict[tuple[str, str], tuple[str, str, str] | None] = {}
+_cache: dict[tuple[str, str], tuple[str, str, str, tuple[str, ...]] | None] = {}
 
 
 def _headers(token: str) -> dict:
@@ -58,40 +65,67 @@ def _pick_english(items: list) -> str:
     return ""
 
 
-async def _english_title(client, kind: str, tmdb_id) -> str:
-    """The English alternative title for a TMDB id, or "" if none/failed."""
+def _pick_czech(items: list) -> list[str]:
+    """All CZ alternative titles from a TMDB alternative_titles list.
+
+    A show can have several — successive dubs used different names ("Kačeří
+    příběhy" and "My z Kačerova") and Webshare files exist under each.
+    """
+    out = []
+    for it in items or []:
+        if (it.get("iso_3166_1") or "").upper() == "CZ":
+            title = (it.get("title") or "").strip()
+            if title and title.casefold() not in {t.casefold() for t in out}:
+                out.append(title)
+    return out
+
+
+async def _alt_titles(client, kind: str, tmdb_id) -> list:
+    """The TMDB alternative_titles list for an id, or [] if none/failed."""
     if not tmdb_id:
-        return ""
+        return []
     try:
         r = await client.get(f"{_BASE}/{kind}/{tmdb_id}/alternative_titles")
         if r.status_code != 200:
-            return ""
+            return []
         body = r.json()
         # TV returns "results", movie returns "titles".
-        return _pick_english(body.get("results") or body.get("titles") or [])
+        return body.get("results") or body.get("titles") or []
     except (httpx.HTTPError, KeyError, ValueError):
-        return ""
+        return []
 
 
-async def _resolve(client, entry: dict, kind: str) -> tuple[str, str, str]:
-    """(display, original, language) for a TMDB entry.
+async def _resolve(client, entry: dict, kind: str) -> tuple[str, str, str, tuple[str, ...]]:
+    """(display, original, language, czech_titles) for a TMDB entry.
 
     When the canonical name is itself the foreign original (no distinct English
     name), swap in the English alternative title as the display — that's what
     Sonarr/Radarr call the show and match releases against — and keep the foreign
     name as the search term.
+
+    For a non-Czech-origin title also collect the CZ alternative titles: dubbed
+    Webshare files are named after the Czech dub ("Kačeří příběhy"), which is
+    not the original title so the orig/display logic never finds it.
     """
     disp, orig = _titles(entry, kind)
     lang = _language(entry)
-    if disp and not orig and lang and lang != "en":
-        eng = await _english_title(client, kind, entry.get("id"))
-        if eng and eng.casefold() != disp.casefold():
-            orig, disp = disp, eng
-    return disp, orig, lang
+    need_english = disp and not orig and lang and lang != "en"
+    need_czech = lang != "cs"  # Czech-origin: original/display already is the CZ name
+    czech: list[str] = []
+    if need_english or need_czech:
+        alts = await _alt_titles(client, kind, entry.get("id"))
+        if need_english:
+            eng = _pick_english(alts)
+            if eng and eng.casefold() != disp.casefold():
+                orig, disp = disp, eng
+        if need_czech:
+            known = {disp.casefold(), orig.casefold()}
+            czech = [t for t in _pick_czech(alts) if t.casefold() not in known]
+    return disp, orig, lang, tuple(czech)
 
 
-async def lookup(token: str, kind: str, query: str) -> tuple[str, str, str] | None:
-    """(display, original, language) for a TMDB `tv`/`movie` matched by name.
+async def lookup(token: str, kind: str, query: str) -> tuple[str, str, str, tuple[str, ...]] | None:
+    """(display, original, language, czech_titles) for a TMDB `tv`/`movie` matched by name.
 
     Fulltext — prefers the first result with a foreign original title (the one
     we want) for the display/original names; can still pick wrong for ambiguous
@@ -123,7 +157,8 @@ async def lookup(token: str, kind: str, query: str) -> tuple[str, str, str] | No
         logger.warning("TMDB search %r (%s) failed: %s", query, kind, exc)
         return None
     _cache[key] = found
-    logger.info("TMDB: %s %r -> display=%r original=%r lang=%r", kind, query, *found)
+    logger.info("TMDB: %s %r -> display=%r original=%r lang=%r czech=%r",
+                kind, query, *found)
     return found
 
 
@@ -138,8 +173,8 @@ def _imdb_id(imdbid) -> str:
 
 
 async def lookup_by_id(token: str, kind: str, tmdbid=None, imdbid=None,
-                       tvdbid=None) -> tuple[str, str, str] | None:
-    """(display, original, language) from an exact external id.
+                       tvdbid=None) -> tuple[str, str, str, tuple[str, ...]] | None:
+    """(display, original, language, czech_titles) from an exact external id.
 
     Tries each supplied id in turn — direct TMDB id, then TVDB, then IMDb — and
     uses the first that resolves, so a Sonarr search carrying both tvdbid and
@@ -163,6 +198,7 @@ async def lookup_by_id(token: str, kind: str, tmdbid=None, imdbid=None,
 
     entry: dict = {}
     disp = orig = lang = ""
+    czech: tuple[str, ...] = ()
     try:
         async with httpx.AsyncClient(timeout=10.0, headers=_headers(token)) as client:
             if tmdbid:
@@ -174,14 +210,14 @@ async def lookup_by_id(token: str, kind: str, tmdbid=None, imdbid=None,
             if not entry and imdb:
                 entry = await _find(client, imdb, "imdb_id")
             if entry:
-                disp, orig, lang = await _resolve(client, entry, kind)
+                disp, orig, lang, czech = await _resolve(client, entry, kind)
     except (httpx.HTTPError, KeyError, ValueError) as exc:
         logger.warning("TMDB id lookup %s (tmdb=%s tvdb=%s imdb=%s) failed: %s",
                        kind, tmdbid, tvdbid, imdb, exc)
         return None
-    found = (disp, orig, lang) if (disp or orig or lang) else None
+    found = (disp, orig, lang, czech) if (disp or orig or lang) else None
     _cache[key] = found
     if found:
-        logger.info("TMDB: %s id(tmdb=%s tvdb=%s imdb=%s) -> display=%r original=%r lang=%r",
-                    kind, tmdbid, tvdbid, imdb, disp, orig, lang)
+        logger.info("TMDB: %s id(tmdb=%s tvdb=%s imdb=%s) -> display=%r original=%r lang=%r czech=%r",
+                    kind, tmdbid, tvdbid, imdb, disp, orig, lang, czech)
     return found

@@ -289,8 +289,10 @@ async def expand_titles(t: str, q: str, cat: str | None, *, tvdbid: str | None =
                         ) -> tuple[list[str], str, str]:
     """Return (search_titles, display_title, original_language).
 
-    search_titles: the query, manual-alias titles, and the TMDB original title —
-    all searched, and any matching file is accepted.
+    search_titles: the query, manual-alias titles, the TMDB original title, and
+    the TMDB CZ alternative titles (the Czech dub name of an English-origin
+    show, e.g. "Kačeří příběhy" for DuckTales) — all searched, and any matching
+    file is accepted.
     display_title: the canonical name used as the release-name prefix, so Sonarr
     shows "The Sleepers" instead of whatever alias/query happened to match.
     original_language: the title's language name (from TMDB) used to tag the
@@ -309,7 +311,7 @@ async def expand_titles(t: str, q: str, cat: str | None, *, tvdbid: str | None =
         if not res:
             res = await tmdb_lookup(settings.tmdb_token, kind, q)
         if res:
-            disp, orig, lang = res
+            disp, orig, lang, czech = res
             seen = {normalize_text(x) for x in titles}
             if disp:
                 display = disp  # prefix releases with the canonical title
@@ -318,8 +320,10 @@ async def expand_titles(t: str, q: str, cat: str | None, *, tvdbid: str | None =
                 if normalize_text(disp) not in seen:
                     titles.append(disp)
                     seen.add(normalize_text(disp))
-            if orig and normalize_text(orig) not in seen:
-                titles.append(orig)
+            for extra in (orig, *czech):
+                if extra and normalize_text(extra) not in seen:
+                    titles.append(extra)
+                    seen.add(normalize_text(extra))
             language = lang_name(lang)
     return titles, display, language
 
