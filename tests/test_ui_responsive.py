@@ -95,3 +95,48 @@ def test_alias_remove_target_is_44px(client):
     client.post("/ui/api/setup", json={"username": "u", "password": "pass1234"})
     html = client.get("/ui").text
     assert ".aliasrow .xbtn { position: absolute; top: 0; right: 0; min-width: 44px; min-height: 44px; }" in html
+
+
+def test_queue_reorder_commits_are_serialized(client):
+    """Rapid taps on the mobile move buttons must not fire overlapping
+    queue/reorder POSTs — commitOrder() has to guard re-entry, disable the
+    move controls for the duration of the request, and release the busy
+    flag in a finally so a network/API failure can't leave the controls
+    (or the lock) stuck."""
+    client.post("/ui/api/setup", json={"username": "u", "password": "pass1234"})
+    html = client.get("/ui").text
+
+    assert "reorderBusy: false," in html
+
+    commit_start = html.index("async commitOrder() {")
+    move_start = html.index("async moveJob(id, delta) {")
+    commit_body = html[commit_start:move_start]
+    move_body = html[move_start:html.index("async setMaxConcurrent(delta) {")]
+
+    # commitOrder() must bail out immediately if a commit is already in flight,
+    # and moveJob() must not touch the DOM order at all while one is pending.
+    assert "if (this.reorderBusy) return;" in commit_body
+    assert "if (this.reorderBusy) return;" in move_body
+
+    # The busy flag must be set, and the move buttons disabled, before the
+    # network request is issued (not after), so a second rapid tap can't
+    # slip in while the first request is still pending.
+    set_busy_pos = commit_body.index("this.reorderBusy = true;")
+    disable_pos = commit_body.index('.disabled = true;')
+    await_pos = commit_body.index("await uiPost(")
+    assert set_busy_pos < await_pos
+    assert disable_pos < await_pos
+
+    # The busy flag must be released in a finally, so it clears even if
+    # uiPost() rejects (offline / API failure), instead of wedging the
+    # move controls disabled forever.
+    finally_pos = commit_body.index("finally {")
+    release_pos = commit_body.index("this.reorderBusy = false;")
+    refresh_pos = commit_body.index("this.refresh(true);")
+    assert await_pos < finally_pos < release_pos < refresh_pos
+
+    # Boundary (first/last) disabling must still take reorderBusy into
+    # account so it doesn't fight with the busy-state disabling, and so
+    # buttons come back correctly enabled once a commit finishes.
+    assert 'c.querySelector(".moveup").disabled = this.reorderBusy || i === 0;' in html
+    assert 'c.querySelector(".movedown").disabled = this.reorderBusy || i === cards.length - 1;' in html

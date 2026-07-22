@@ -905,6 +905,7 @@ const App = {
   confirmId: null,
   clearAsked: false,
   offline: false,
+  reorderBusy: false,
   grabbed: new Set(),
   lastSearch: null,
   logSeq: 0,
@@ -1161,8 +1162,8 @@ const App = {
     }
     const cards = [...list.children];
     cards.forEach((c, i) => {
-      c.querySelector(".moveup").disabled = i === 0;
-      c.querySelector(".movedown").disabled = i === cards.length - 1;
+      c.querySelector(".moveup").disabled = this.reorderBusy || i === 0;
+      c.querySelector(".movedown").disabled = this.reorderBusy || i === cards.length - 1;
     });
     if (!list._dragBound) {
       list.addEventListener("dragover", (e) => {
@@ -1181,14 +1182,24 @@ const App = {
   },
 
   async commitOrder() {
+    if (this.reorderBusy) return;
+    this.reorderBusy = true;
+    for (const c of $("queue-list").children) {
+      c.querySelector(".moveup").disabled = true;
+      c.querySelector(".movedown").disabled = true;
+    }
     const order = [...$("queue-list").children].map((c) => c.dataset.id);
     try {
       await uiPost("queue/reorder", { order });
     } catch (e) { /* offline banner covers it */ }
+    finally {
+      this.reorderBusy = false;
+    }
     this.refresh(true);
   },
 
   async moveJob(id, delta) {
+    if (this.reorderBusy) return;
     const list = $("queue-list");
     const card = list.querySelector(`[data-id="${id}"]`);
     const sib = delta < 0 ? card?.previousElementSibling : card?.nextElementSibling;
