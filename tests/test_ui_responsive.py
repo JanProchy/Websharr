@@ -15,7 +15,7 @@ def test_mobile_drawer_and_breakpoints_present(client):
         "@media (max-width: 860px)", "@media (max-width: 640px)",
         "@media (prefers-reduced-motion: reduce)",
         "env(safe-area-inset", "viewport-fit=cover",
-        'class="ibtn movebtn moveup"', 'class="ibtn movebtn movedown"',
+        'class="grip"', 'class="qstatus"',
     ):
         assert needle in html, needle
 
@@ -80,15 +80,19 @@ def test_drawer_nav_not_mislabeled_as_dialog(client):
     assert '<nav aria-label="Main">' in html
 
 
-def test_queue_move_buttons_available_through_tablet_width(client):
+def test_queue_drag_handle_is_touch_and_keyboard_accessible(client):
     client.post("/ui/api/setup", json={"username": "u", "password": "pass1234"})
     html = client.get("/ui").text
-    # grip/movebtn swap must happen at the 860px breakpoint, not just 640px
-    block_start = html.index("@media (max-width: 860px) {\n    .grip { display: none; }")
-    block_end = html.index("/* history */", block_start)
-    block = html[block_start:block_end]
-    assert ".movebtn { display: inline-flex" in block
-    assert "min-width: 44px; min-height: 44px" in block
+    assert 'aria-label="Drag to reorder; use arrow keys for keyboard control"' in html
+    assert "touch-action: none" in html
+    assert ".grip { width: 44px; height: 44px" in html
+    assert "grip.onpointerdown" in html
+    assert 'window.addEventListener("pointermove", (e) => App.moveQueueDrag(e), { passive: false })' in html
+    assert 'window.addEventListener("pointerup", (e) => App.endQueueDrag(e, false))' in html
+    assert 'window.addEventListener("pointercancel", (e) => App.endQueueDrag(e, true))' in html
+    assert 'e.key !== "ArrowUp" && e.key !== "ArrowDown"' in html
+    assert 'e.key === "ArrowUp" ? -1 : 1' in html
+    assert "movebtn" not in html
 
 
 def test_alias_remove_target_is_44px(client):
@@ -98,9 +102,9 @@ def test_alias_remove_target_is_44px(client):
 
 
 def test_queue_reorder_commits_are_serialized(client):
-    """Rapid taps on the mobile move buttons must not fire overlapping
-    queue/reorder POSTs — commitOrder() has to guard re-entry, disable the
-    move controls for the duration of the request, and release the busy
+    """Drag/keyboard reorders must not fire overlapping queue/reorder POSTs —
+    commitOrder() has to guard re-entry, disable the drag handles for the
+    duration of the request, and release the busy
     flag in a finally so a network/API failure can't leave the controls
     (or the lock) stuck."""
     client.post("/ui/api/setup", json={"username": "u", "password": "pass1234"})
@@ -114,15 +118,13 @@ def test_queue_reorder_commits_are_serialized(client):
     move_body = html[move_start:html.index("async setMaxConcurrent(delta) {")]
 
     # commitOrder() must bail out immediately if a commit is already in flight,
-    # and moveJob() must not touch the DOM order at all while one is pending.
+    # and keyboard moveJob() must not touch the DOM order while one is pending.
     assert "if (this.reorderBusy) return;" in commit_body
     assert "if (this.reorderBusy) return;" in move_body
 
-    # The busy flag must be set, and the move buttons disabled, before the
-    # network request is issued (not after), so a second rapid tap can't
-    # slip in while the first request is still pending.
+    # The busy flag must be set, and the handles disabled, before the request.
     set_busy_pos = commit_body.index("this.reorderBusy = true;")
-    disable_pos = commit_body.index('.disabled = true;')
+    disable_pos = commit_body.index('c.querySelector(".grip").disabled = true;')
     await_pos = commit_body.index("await uiPost(")
     assert set_busy_pos < await_pos
     assert disable_pos < await_pos
@@ -135,8 +137,17 @@ def test_queue_reorder_commits_are_serialized(client):
     refresh_pos = commit_body.index("this.refresh(true);")
     assert await_pos < finally_pos < release_pos < refresh_pos
 
-    # Boundary (first/last) disabling must still take reorderBusy into
-    # account so it doesn't fight with the busy-state disabling, and so
-    # buttons come back correctly enabled once a commit finishes.
-    assert 'c.querySelector(".moveup").disabled = this.reorderBusy || i === 0;' in html
-    assert 'c.querySelector(".movedown").disabled = this.reorderBusy || i === cards.length - 1;' in html
+    assert 'c.querySelector(".grip").disabled = this.reorderBusy;' in html
+
+
+def test_pointer_drag_commits_only_changed_order_and_cancel_restores(client):
+    client.post("/ui/api/setup", json={"username": "u", "password": "pass1234"})
+    html = client.get("/ui").text
+    assert "beginQueueDrag(e, card)" in html
+    assert "moveQueueDrag(e)" in html
+    assert "endQueueDrag(e, cancelled)" in html
+    assert "grip.setPointerCapture(e.pointerId)" in html
+    assert "originalOrder:" in html
+    assert "if (cancelled)" in html
+    assert "for (const id of drag.originalOrder)" in html
+    assert 'if (order.some((id, i) => id !== drag.originalOrder[i])) this.commitOrder();' in html
