@@ -26,7 +26,7 @@ from . import notify
 from .applog import records as log_records
 from .config import config
 from .downloads import DownloadManager, Job
-from .settings import SESSION_TTL, hash_password, settings, verify_password
+from .settings import SESSION_TTL, THEMES, hash_password, settings, verify_password
 from .torznab import (
     VIDEO_EXTENSIONS,
     build_queries,
@@ -94,6 +94,7 @@ async def ui_index(request: Request):
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     html = html.replace("__WEBSHARR_API_KEY__", config.api_key)
     html = html.replace("__WEBSHARR_VERSION__", __version__)
+    html = html.replace("__WEBSHARR_THEME__", settings.theme)
     return HTMLResponse(html)
 
 
@@ -183,6 +184,7 @@ async def ui_settings_get(request: Request):
         "max_concurrent": request.app.state.downloads.max_concurrent,
         "notify_urls": settings.notify_urls,
         "notify_vip_days": settings.notify_vip_days,
+        "theme": settings.theme,
         "account": getattr(request.app.state, "account", None),
     }
 
@@ -266,6 +268,11 @@ async def ui_settings_post(request: Request):
             settings.notify_vip_days = max(0, int(body.get("notify_vip_days")))
         except (TypeError, ValueError):
             return JSONResponse({"error": "notify_vip_days must be a number"}, status_code=400)
+    if "theme" in body:
+        theme = body.get("theme")
+        if theme not in THEMES:
+            return JSONResponse({"error": "Unknown theme"}, status_code=400)
+        settings.theme = theme
 
     settings.save()
     settings.apply()

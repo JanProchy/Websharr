@@ -19,6 +19,8 @@ logger = logging.getLogger("websharr.settings")
 
 PBKDF2_ITERATIONS = 200_000
 SESSION_TTL = 14 * 86400  # seconds
+DEFAULT_THEME = "websharr-blue"
+THEMES = frozenset({DEFAULT_THEME, "osaka-jade", "space-grey"})
 
 
 def hash_password(password: str) -> str:
@@ -63,6 +65,7 @@ class Settings:
         # Apprise notification URLs + VIP-expiry warning threshold (days).
         self.notify_urls: list[str] = list(config.notify_urls)
         self.notify_vip_days: int = config.notify_vip_days
+        self.theme: str = DEFAULT_THEME
 
     @property
     def configured(self) -> bool:
@@ -100,6 +103,8 @@ class Settings:
             self.notify_vip_days = int(data.get("notify_vip_days") or config.notify_vip_days)
         except (TypeError, ValueError):
             self.notify_vip_days = config.notify_vip_days
+        theme = data.get("theme", DEFAULT_THEME)
+        self.theme = theme if theme in THEMES else DEFAULT_THEME
 
     def save(self) -> None:
         path = config.settings_file
@@ -118,6 +123,7 @@ class Settings:
             "max_concurrent": self.max_concurrent,
             "notify_urls": self.notify_urls,
             "notify_vip_days": self.notify_vip_days,
+            "theme": self.theme,
         }
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         path.chmod(0o600)

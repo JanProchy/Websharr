@@ -151,3 +151,19 @@ def test_pointer_drag_commits_only_changed_order_and_cancel_restores(client):
     assert "if (cancelled)" in html
     assert "for (const id of drag.originalOrder)" in html
     assert 'if (order.some((id, i) => id !== drag.originalOrder[i])) this.commitOrder();' in html
+
+
+def test_theme_picker_and_three_palettes_are_present(client):
+    client.post("/ui/api/setup", json={"username": "u", "password": "pass1234"})
+    html = client.get("/ui").text
+    for theme, label in (
+        ("websharr-blue", "Websharr Blue"),
+        ("osaka-jade", "Osaka Jade"),
+        ("space-grey", "Space Grey"),
+    ):
+        assert f'value="{theme}"' in html
+        assert label in html
+    assert 'html[data-theme="osaka-jade"]' in html
+    assert 'html[data-theme="space-grey"]' in html
+    assert "applyTheme(theme)" in html
+    assert 'uiPost("settings", { theme: next })' in html

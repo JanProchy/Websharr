@@ -100,6 +100,30 @@ def test_settings_roundtrip_and_live_client_update(client, fake_webshare):
     assert resp.status_code == 400
 
 
+def test_theme_setting_defaults_validates_persists_and_renders(client):
+    import json
+
+    from app.config import config
+
+    _setup(client)
+    assert client.get("/ui/api/settings").json()["theme"] == "websharr-blue"
+
+    saved = client.post("/ui/api/settings", json={"theme": "osaka-jade"})
+    assert saved.status_code == 200
+    assert client.get("/ui/api/settings").json()["theme"] == "osaka-jade"
+    assert json.loads(config.settings_file.read_text())["theme"] == "osaka-jade"
+    html = client.get("/ui").text
+    assert '<html lang="en" data-theme="osaka-jade">' in html
+    assert "__WEBSHARR_THEME__" not in html
+
+    assert client.post("/ui/api/settings", json={"theme": "space-grey"}).status_code == 200
+    assert client.get("/ui/api/settings").json()["theme"] == "space-grey"
+
+    rejected = client.post("/ui/api/settings", json={"theme": "javascript:alert(1)"})
+    assert rejected.status_code == 400
+    assert client.get("/ui/api/settings").json()["theme"] == "space-grey"
+
+
 def test_webshare_password_never_stored_in_plaintext(client):
     from app.config import config
     import json
