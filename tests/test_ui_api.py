@@ -1,5 +1,6 @@
 """Tests for the /ui and /ui/api/* endpoints."""
 
+from app import __version__
 from app.webshare import SearchResult
 
 from .conftest import wait_for
@@ -18,6 +19,13 @@ def test_ui_page_served_with_key_injected(client):
     assert "text/html" in resp.headers["content-type"]
     assert "testkey" in resp.text
     assert "__WEBSHARR_API_KEY__" not in resp.text
+
+
+def test_app_version_is_current_and_rendered(client):
+    assert __version__ == "0.2.0"
+    assert _ui(client, "status").json()["version"] == __version__
+    client.post("/ui/api/setup", json={"username": "u", "password": "pass1234"})
+    assert f'<span class="version">v{__version__}</span>' in client.get("/ui").text
 
 
 def test_tab_paths_serve_the_app(client):
