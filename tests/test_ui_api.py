@@ -22,7 +22,7 @@ def test_ui_page_served_with_key_injected(client):
 
 
 def test_app_version_is_current_and_rendered(client):
-    assert __version__ == "0.3.0"
+    assert __version__ == "0.3.1"
     assert _ui(client, "status").json()["version"] == __version__
     client.post("/ui/api/setup", json={"username": "u", "password": "pass1234"})
     assert f'<span class="version">v{__version__}</span>' in client.get("/ui").text

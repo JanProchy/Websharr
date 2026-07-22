@@ -167,3 +167,14 @@ def test_theme_picker_and_three_palettes_are_present(client):
     assert 'html[data-theme="space-grey"]' in html
     assert "applyTheme(theme)" in html
     assert 'uiPost("settings", { theme: next })' in html
+
+
+def test_theme_filter_applies_to_brand_and_empty_state_logos(client):
+    client.post("/ui/api/setup", json={"username": "u", "password": "pass1234"})
+    html = client.get("/ui").text
+    for theme in ("osaka-jade", "space-grey"):
+        selector = (
+            f'html[data-theme="{theme}"] .brand img,\n'
+            f'  html[data-theme="{theme}"] .empty img'
+        )
+        assert selector in html

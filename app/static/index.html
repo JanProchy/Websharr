@@ -47,8 +47,10 @@
     --grey: #939393; --grey-rgb: 147,147,147;
     --backdrop: rgba(0,0,0,.58); --console: #111111; --primary-text: #202020;
   }
-  html[data-theme="osaka-jade"] .brand img { filter: hue-rotate(-55deg) saturate(.8); }
+  html[data-theme="osaka-jade"] .brand img,
+  html[data-theme="osaka-jade"] .empty img { filter: hue-rotate(-55deg) saturate(.8); }
   html[data-theme="space-grey"] .brand img,
+  html[data-theme="space-grey"] .empty img,
   html[data-theme="space-grey"] svg.flow { filter: grayscale(1); }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
