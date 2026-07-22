@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Websharr</title>
 <link rel="icon" href="/ui/assets/favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -19,6 +19,8 @@
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
+  html { overflow-x: hidden; }
+  img, svg { max-width: 100%; }
   body { background: var(--bg); color: var(--text); font: 14px/1.45 'Nunito', sans-serif; }
   a { color: var(--accent); text-decoration: none; }
   a:hover { color: #7ecbf8; text-decoration: underline; }
@@ -35,6 +37,12 @@
     animation: pulse 1.2s ease-in-out infinite; }
   #offline button { margin-left: auto; background: none; border: 1px solid rgba(242,109,100,0.5);
     color: #f8a49e; border-radius: 7px; padding: 3px 12px; font-weight: 700; cursor: pointer; font-size: 13px; }
+  #offline { padding-left: max(20px, env(safe-area-inset-left));
+             padding-right: max(20px, env(safe-area-inset-right)); }
+  @media (max-width: 640px) {
+    #offline { padding-top: 9px; padding-bottom: 9px; gap: 8px; font-size: 12.5px; }
+    #offline button { flex-shrink: 0; padding: 4px 10px; font-size: 12px; }
+  }
 
   /* header */
   header { display: flex; align-items: center; gap: 16px; height: 58px; padding: 0 20px;
@@ -58,6 +66,57 @@
   .user .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
   .user.off .dot { background: var(--red); }
   .user span { font-size: 13px; font-weight: 700; color: var(--muted); }
+
+  .hdr-toggle { display: none; }
+  .hdr-menu { display: contents; }
+  .hdr-menu-top { display: none; }
+  .hdr-backdrop { display: none; }
+
+  @media (max-width: 860px) {
+    header { padding-left: max(20px, env(safe-area-inset-left));
+             padding-right: max(20px, env(safe-area-inset-right)); z-index: 46; }
+
+    .hdr-toggle {
+      display: flex; flex-direction: column; justify-content: center; align-items: center;
+      gap: 4px; width: 44px; height: 44px; margin-left: auto;
+      background: none; border: none; border-radius: 8px; cursor: pointer; padding: 0;
+    }
+    .hdr-toggle span { width: 20px; height: 2px; background: var(--muted); border-radius: 2px;
+      transition: transform .15s ease, opacity .15s ease; }
+    .hdr-toggle:hover span { background: var(--text); }
+    .hdr-toggle[aria-expanded="true"] span:nth-child(1) { transform: translateY(6px) rotate(45deg); }
+    .hdr-toggle[aria-expanded="true"] span:nth-child(2) { opacity: 0; }
+    .hdr-toggle[aria-expanded="true"] span:nth-child(3) { transform: translateY(-6px) rotate(-45deg); }
+
+    .hdr-menu {
+      display: flex; flex-direction: column; align-items: stretch; gap: 4px;
+      position: fixed; top: 0; right: 0; bottom: 0; width: min(84vw, 320px);
+      background: var(--panel); border-left: 1px solid var(--border);
+      padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+               max(16px, env(safe-area-inset-bottom)) 16px;
+      overflow-y: auto; z-index: 50;
+      transform: translateX(100%); transition: transform .22s ease;
+    }
+    body.menu-open .hdr-menu { transform: translateX(0); }
+    .hdr-menu-top { display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 6px; }
+    .hdr-menu-top .hdr-menu-title { font-weight: 800; font-size: 15px; color: var(--text); }
+    .hdr-close { display: flex; align-items: center; justify-content: center;
+      width: 44px; height: 44px; margin-right: -10px;
+      background: none; border: none; border-radius: 8px; color: var(--muted); cursor: pointer; padding: 0; }
+    .hdr-close:hover { color: var(--text); background: var(--accent-soft); }
+    .hdr-menu nav { flex-direction: column; gap: 4px; margin-left: 0; }
+    .hdr-menu nav button { width: 100%; justify-content: space-between; min-height: 44px;
+      padding: 10px 14px; font-size: 15px; }
+    .hdr-menu .spacer { flex: none; height: 1px; background: var(--border); margin: 10px 0; }
+    .hdr-menu .ghlink { padding: 10px 4px; }
+    .hdr-menu .version { padding: 4px; }
+    .hdr-menu .user { align-self: flex-start; }
+    .hdr-menu .ghost { min-height: 44px; }
+
+    .hdr-backdrop.show { display: block; position: fixed; inset: 0;
+      background: rgba(4,12,20,.55); z-index: 45; }
+  }
 
   main { max-width: 1060px; margin: 0 auto; padding: 22px 20px 48px; }
   .view { display: none; }
@@ -100,6 +159,7 @@
   .grip { color: var(--faint); cursor: grab; font-size: 15px; line-height: 1;
     user-select: none; flex-shrink: 0; letter-spacing: -2px; }
   .grip:active { cursor: grabbing; }
+  .movebtn { display: none; }
   .qmax { margin-left: auto; display: flex; align-items: center; gap: 7px;
     color: var(--muted); font-size: 13px; font-weight: 700; }
   .qmax .stepbtn { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;
@@ -130,6 +190,31 @@
   .confirm .cancel { background: none; border: 1px solid var(--border); color: var(--muted);
     border-radius: 7px; padding: 4px 12px; font-size: 13px; font-weight: 700; cursor: pointer; }
 
+  @media (max-width: 640px) {
+    .qrow1 { flex-wrap: wrap; row-gap: 8px; }
+    .qname { order: 1; flex: 1 1 100%; white-space: normal; overflow: hidden; text-overflow: unset;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; }
+    .movebtn, .pill, .chip { order: 2; }
+    .size { order: 2; margin-left: auto; }
+    .pausebtn, .xbtn { order: 3; min-width: 40px; min-height: 40px; }
+
+    .qrow2 { flex-wrap: wrap; }
+    .track { order: 1; flex: 1 1 100%; height: 8px; }
+    .pct, .speed, .eta { order: 2; width: auto; text-align: left; }
+
+    .confirm { flex-wrap: wrap; }
+    .confirm .q { flex: 1 1 100%; }
+    .confirm .del, .confirm .delf, .confirm .cancel { flex: 1 1 auto; min-height: 40px; }
+  }
+  @media (max-width: 860px) {
+    .grip { display: none; }
+    .movebtn { display: inline-flex; min-width: 44px; min-height: 44px; align-items: center; justify-content: center; }
+
+    .viewhead { flex-wrap: wrap; row-gap: 8px; }
+    .qmax { flex-basis: 100%; margin-left: 0; justify-content: flex-start; }
+    .qmax .stepbtn { width: 34px; height: 34px; font-size: 18px; }
+  }
+
   /* history */
   .table { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
   .hrow { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--border-soft); }
@@ -143,6 +228,22 @@
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .htime { color: var(--faint); font-size: 13px; font-weight: 600; width: 92px; text-align: right; flex-shrink: 0; }
   .hactions { display: flex; align-items: center; gap: 4px; width: 96px; justify-content: flex-end; flex-shrink: 0; }
+
+  @media (max-width: 640px) {
+    .hrow { flex-wrap: wrap; row-gap: 8px; padding: 12px 14px; }
+    .hdot { order: 1; }
+    .hmain { order: 2; flex: 1 1 calc(100% - 20px); }
+    .hname, .herr, .hpath { white-space: normal; overflow: visible; text-overflow: unset;
+      word-break: break-word; }
+    .hpath { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .chip, .size { order: 3; }
+    .htime { order: 3; width: auto; margin-left: auto; text-align: left; }
+    .hactions { order: 4; flex: 1 1 100%; width: auto; justify-content: flex-end;
+      margin-top: 4px; }
+    .hactions .xbtn, .hactions .accentbtn { min-width: 40px; min-height: 40px; }
+
+    #clear-wrap { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  }
 
   /* search */
   #search-form { display: flex; gap: 8px; align-items: stretch; background: var(--panel);
@@ -166,6 +267,13 @@
     border-color: var(--accent); color: #06202f; padding: 0 18px; font-weight: 800; cursor: pointer; }
   #search-form button svg { width: 15px; height: 15px; }
   #search-form button:hover { background: #7ecbf8; border-color: #7ecbf8; }
+  @media (max-width: 640px) {
+    #search-form { flex-wrap: wrap; }
+    #q { flex: 1 1 100%; }
+    #qtype, #season, #ep { flex: 1 1 0; width: auto; min-width: 0; }
+    #search-form button { flex: 1 1 100%; justify-content: center; min-height: 44px; }
+    #search-form input, #search-form select { min-height: 44px; }
+  }
   #search-status { margin-top: 14px; padding: 32px; text-align: center; color: var(--muted);
     font-size: 13.5px; font-weight: 700; animation: pulse 1.2s ease-in-out infinite; display: none; }
   .thead { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid var(--border);
@@ -182,6 +290,16 @@
   .rres { width: 62px; }
   .rdur { width: 60px; }
   .rmeta.dim { color: var(--faint); }
+  @media (max-width: 640px) {
+    .thead > span:not(:first-child) { display: none; }
+    .rrow { flex-wrap: wrap; row-gap: 6px; padding: 12px 14px; }
+    .rtitle { order: 1; flex: 1 1 100%; white-space: normal; overflow: visible; text-overflow: unset;
+      word-break: break-word; }
+    .rmeta, .rsize { order: 2; width: auto; text-align: left; }
+    .rsize { margin-left: auto; }
+    .rgrab { order: 3; flex: 1 1 100%; width: auto; justify-content: flex-end; margin-top: 4px; }
+    .rgrab .accentbtn { min-height: 44px; min-width: 44px; }
+  }
   /* grab metadata form */
   .gform { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 2px 14px 12px;
     padding: 10px 12px; background: var(--accent-soft); border: 1px solid rgba(77,182,245,0.3);
@@ -197,6 +315,12 @@
   .gform .g-series, .gform .g-title { flex: 1; min-width: 140px; }
   .gform .g-season, .gform .g-ep, .gform .g-year { width: 92px; }
   .gform .spacer { flex: 1; }
+  @media (max-width: 640px) {
+    .gform .g-series, .gform .g-title { flex: 1 1 100%; min-width: 0; }
+    .gform .g-season, .gform .g-ep, .gform .g-year { flex: 1 1 30%; width: auto; }
+    .gform .spacer { display: none; }
+    .gform .g-go, .gform .g-cancel { flex: 1 1 auto; min-height: 44px; }
+  }
 
   /* help */
   #view-help { max-width: 828px; margin: 0 auto; }
@@ -211,6 +335,14 @@
   .htab td { padding: 7px 8px; border-bottom: 1px solid var(--border-soft); font-size: 13px; }
   .htab tr:last-child td { border-bottom: none; }
   .htab td:first-child { color: var(--muted); font-weight: 700; width: 130px; }
+  @media (max-width: 640px) {
+    .hcard { padding: 14px 16px; }
+    .htab, .htab tbody, .htab tr { display: block; width: 100%; }
+    .htab td { display: block; width: auto !important; padding: 4px 0; border-bottom: none; }
+    .htab tr:not(:first-child) td:first-child { border-top: 1px solid var(--border-soft);
+      margin-top: 6px; padding-top: 8px; }
+    .htab code { word-break: break-all; }
+  }
   .hlist { margin: 4px 0 0; padding-left: 18px; color: var(--muted); font-size: 13px; line-height: 1.7; }
   .hlist li { margin-bottom: 4px; }
   .hlist b { color: #c7d8e5; }
@@ -222,6 +354,13 @@
   svg.flow .lbl { fill: var(--faint); font: 700 11px 'Nunito', sans-serif; text-anchor: middle; }
   svg.flow .lbl.acc { fill: var(--accent); }
   svg.flow .lbl.grn { fill: var(--green); }
+  .flowscroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .flowhint { display: none; }
+  @media (max-width: 640px) {
+    .flowscroll svg.flow { min-width: 640px; width: 640px; }
+    .flowhint { display: block; color: var(--faint); font-size: 12px; font-weight: 700;
+      text-align: right; margin: 4px 2px 0; }
+  }
 
   /* log console */
   .logtail { color: var(--muted); font-size: 12.5px; font-weight: 700; display: flex;
@@ -238,6 +377,13 @@
   .lv.WARNING { color: #f5c451; }
   .lv.ERROR, .lv.CRITICAL { color: var(--red); }
   .lv.DEBUG { color: var(--faint); }
+  @media (max-width: 640px) {
+    #log-console { height: calc(100vh - 260px); min-height: 220px; padding: 10px; }
+    .logline { font-size: 11.5px; }
+    .logline .lv { width: 54px; }
+    .logtail { padding: 6px 0; }
+    .logtail input[type="checkbox"] { width: 18px; height: 18px; }
+  }
 
   /* settings — two columns: info left, form right; centered column */
   #view-settings { max-width: 828px; margin: 0 auto; }
@@ -272,6 +418,22 @@
   .aliasrow input:focus { border-color: var(--accent); }
   .aliasrow .arrow { color: var(--faint); font-weight: 800; flex-shrink: 0; }
   @media (max-width: 860px) { .scard { grid-template-columns: 1fr; } }
+  @media (max-width: 640px) {
+    .srow { flex-wrap: wrap; row-gap: 8px; }
+    .srow .spacer { flex-basis: 100%; height: 0; }
+    .accentbtn, .ghost, .primary { min-height: 44px; }
+    #set-api-key { flex: 1 1 100%; }
+
+    .aliasrow { flex-wrap: wrap; position: relative; padding-right: 40px; }
+    .aliasrow input { flex: 1 1 100%; }
+    .aliasrow .arrow { flex: 1 1 100%; padding-left: 2px; }
+    .aliasrow .xbtn { position: absolute; top: 0; right: 0; min-width: 44px; min-height: 44px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: .001ms !important; animation-iteration-count: 1 !important;
+        transition-duration: .001ms !important; }
+  }
 </style>
 </head>
 <body>
@@ -287,25 +449,41 @@
     <img src="/ui/assets/logo.svg" alt="">
     <span>Websharr</span>
   </div>
-  <nav>
-    <button id="tab-queue" onclick="App.show('queue')">Queue <span class="count" id="queue-count">0</span></button>
-    <button id="tab-history" onclick="App.show('history')">History</button>
-    <button id="tab-search" onclick="App.show('search')">Search</button>
-    <button id="tab-log" onclick="App.show('log')">Log</button>
-    <button id="tab-help" onclick="App.show('help')">Help</button>
-    <button id="tab-settings" onclick="App.show('settings')">Settings</button>
-  </nav>
-  <div class="spacer"></div>
-  <a class="ghlink" href="https://github.com/JanProchy/Websharr" target="_blank" rel="noopener" title="Websharr on GitHub" aria-label="GitHub repository">
-    <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-  </a>
-  <span class="version">v__WEBSHARR_VERSION__</span>
-  <div class="user" id="user-chip"><span class="dot"></span><span id="user-name">—</span></div>
-  <button class="ghost" onclick="App.logout()">Sign out</button>
+  <button class="hdr-toggle" id="hdr-toggle" aria-label="Open menu"
+    aria-expanded="false" aria-controls="hdr-menu" onclick="App.toggleMenu()">
+    <span></span><span></span><span></span>
+  </button>
+  <div class="hdr-menu" id="hdr-menu">
+    <div class="hdr-menu-top">
+      <span class="hdr-menu-title">Menu</span>
+      <button class="hdr-close" id="hdr-close" aria-label="Close menu" onclick="App.toggleMenu(false)">
+        <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+          <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+            d="M4 4l12 12M16 4L4 16"/>
+        </svg>
+      </button>
+    </div>
+    <nav aria-label="Main">
+      <button id="tab-queue" onclick="App.show('queue')">Queue <span class="count" id="queue-count">0</span></button>
+      <button id="tab-history" onclick="App.show('history')">History</button>
+      <button id="tab-search" onclick="App.show('search')">Search</button>
+      <button id="tab-log" onclick="App.show('log')">Log</button>
+      <button id="tab-help" onclick="App.show('help')">Help</button>
+      <button id="tab-settings" onclick="App.show('settings')">Settings</button>
+    </nav>
+    <div class="spacer"></div>
+    <a class="ghlink" href="https://github.com/JanProchy/Websharr" target="_blank" rel="noopener" title="Websharr on GitHub" aria-label="GitHub repository">
+      <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+    </a>
+    <span class="version">v__WEBSHARR_VERSION__</span>
+    <div class="user" id="user-chip"><span class="dot"></span><span id="user-name">—</span></div>
+    <button class="ghost" onclick="App.logout()">Sign out</button>
+  </div>
 </header>
+<div class="hdr-backdrop" id="hdr-backdrop" onclick="App.toggleMenu(false)"></div>
 
 <main>
-  <section class="view active" id="view-queue">
+  <section class="view active" id="view-queue" tabindex="-1">
     <div class="viewhead"><h2>Queue</h2><span class="sub" id="queue-summary"></span>
       <div class="qmax" title="How many files download at once">
         <span>Max downloads</span>
@@ -323,7 +501,7 @@
     <div id="queue-list"></div>
   </section>
 
-  <section class="view" id="view-history">
+  <section class="view" id="view-history" tabindex="-1">
     <div class="viewhead">
       <h2>History</h2><span class="sub" id="history-summary"></span>
       <div class="spacer"></div>
@@ -335,7 +513,7 @@
     <div class="table" id="history-list"></div>
   </section>
 
-  <section class="view" id="view-search">
+  <section class="view" id="view-search" tabindex="-1">
     <div class="viewhead"><h2>Search</h2>
       <span class="sub">Runs the same query Sonarr or Radarr would — results come straight from Webshare.</span></div>
     <form id="search-form" onsubmit="App.search();return false">
@@ -359,7 +537,7 @@
     <div id="search-results"></div>
   </section>
 
-  <section class="view" id="view-log">
+  <section class="view" id="view-log" tabindex="-1">
     <div class="viewhead"><h2>Log</h2>
       <span class="sub">Live backend activity — including Sonarr/Radarr requests. Newest at the bottom.</span>
       <div class="spacer"></div>
@@ -368,12 +546,13 @@
     <div id="log-console"></div>
   </section>
 
-  <section class="view" id="view-help">
+  <section class="view" id="view-help" tabindex="-1">
     <div class="viewhead"><h2>Help</h2>
       <span class="sub">How Websharr fits into your media stack, and how to wire it into Sonarr / Radarr.</span></div>
 
     <div class="hcard">
       <h3>How the flow works</h3>
+      <div class="flowscroll">
       <svg class="flow" viewBox="0 0 900 300" role="img" aria-label="Media stack flow diagram">
         <defs>
           <marker id="arw" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
@@ -413,6 +592,8 @@
         <line x1="248" y1="96" x2="248" y2="210" stroke="#5f7a90" stroke-width="2" marker-end="url(#arw)"/>
         <text x="238" y="158" class="lbl" text-anchor="end">import + rename</text>
       </svg>
+      </div>
+      <p class="flowhint">Scroll to see the full diagram →</p>
       <p class="shint" style="margin-top:14px">
         You request something in Jellyseerr → Sonarr/Radarr search through Websharr's
         <b>Newznab indexer</b> (directly or via Prowlarr) → on grab, Websharr's <b>SABnzbd
@@ -484,7 +665,7 @@
     </div>
   </section>
 
-  <section class="view" id="view-settings">
+  <section class="view" id="view-settings" tabindex="-1">
     <div class="viewhead"><h2>Settings</h2></div>
 
     <div class="scard">
@@ -729,13 +910,46 @@ const App = {
   logSeq: 0,
   logTimer: null,
 
+  menuMql: window.matchMedia("(max-width: 860px)"),
+
+  // Closed drawer stays out of the a11y tree on mobile; on desktop it's
+  // always part of the normal layout, regardless of menu-open state.
+  syncMenuInert() {
+    const menu = $("hdr-menu");
+    const hidden = this.menuMql.matches && !document.body.classList.contains("menu-open");
+    menu.toggleAttribute("inert", hidden);
+    if (hidden) menu.setAttribute("aria-hidden", "true");
+    else menu.removeAttribute("aria-hidden");
+  },
+
+  toggleMenu(force, opts) {
+    const wasOpen = document.body.classList.contains("menu-open");
+    const open = typeof force === "boolean" ? force : !wasOpen;
+    document.body.classList.toggle("menu-open", open);
+    $("hdr-backdrop").classList.toggle("show", open);
+    $("hdr-toggle").setAttribute("aria-expanded", String(open));
+    document.querySelector("main").toggleAttribute("inert", open);
+    this.syncMenuInert();
+    if (open === wasOpen) return;
+    if (open) $("hdr-menu").querySelector("nav button")?.focus();
+    else if (!opts || opts.returnFocus !== false) $("hdr-toggle").focus();
+  },
+
   show(tab) {
+    // Closing the drawer makes #hdr-menu inert, which force-blurs the nav
+    // button the user just tapped (a focused descendant of an inert
+    // element gets blurred). Land focus on the new view instead of letting
+    // it fall through to nowhere — but leave desktop nav clicks alone,
+    // where the clicked button stays focusable and focus should stay put.
+    const wasMenuOpen = document.body.classList.contains("menu-open");
+    this.toggleMenu(false, { returnFocus: false });
     this.tab = tab;
     if (location.pathname !== "/" + tab) history.pushState(null, "", "/" + tab);
     for (const t of ["queue", "history", "search", "log", "help", "settings"]) {
       $("tab-" + t).classList.toggle("active", t === tab);
       $("view-" + t).classList.toggle("active", t === tab);
     }
+    if (wasMenuOpen) $("view-" + tab).focus();
     if (tab === "settings") this.loadSettings();
     if (tab === "log") this.startLog(); else this.stopLog();
     this.refresh(true);
@@ -888,6 +1102,8 @@ const App = {
         card.innerHTML = `
           <div class="qrow1">
             <span class="grip" title="Drag to reorder">⠿</span>
+            <button class="ibtn movebtn moveup" title="Move up" aria-label="Move up">▲</button>
+            <button class="ibtn movebtn movedown" title="Move down" aria-label="Move down">▼</button>
             <span class="pill"></span>
             <span class="qname"></span>
             <span class="chip"></span>
@@ -902,6 +1118,8 @@ const App = {
           <div class="cslot"></div>`;
         card.querySelector(".xbtn").onclick = () => { this.confirmId = j.nzo_id; this.refresh(); this.renderConfirms(); };
         card.querySelector(".pausebtn").onclick = () => this.togglePause(j.nzo_id, card);
+        card.querySelector(".moveup").onclick = () => this.moveJob(j.nzo_id, -1);
+        card.querySelector(".movedown").onclick = () => this.moveJob(j.nzo_id, 1);
         card.addEventListener("dragstart", (e) => {
           this.dragActive = true;
           card.classList.add("dragging");
@@ -941,6 +1159,11 @@ const App = {
         if (c) list.appendChild(c);
       }
     }
+    const cards = [...list.children];
+    cards.forEach((c, i) => {
+      c.querySelector(".moveup").disabled = i === 0;
+      c.querySelector(".movedown").disabled = i === cards.length - 1;
+    });
     if (!list._dragBound) {
       list.addEventListener("dragover", (e) => {
         if (!this.dragActive) return;
@@ -963,6 +1186,15 @@ const App = {
       await uiPost("queue/reorder", { order });
     } catch (e) { /* offline banner covers it */ }
     this.refresh(true);
+  },
+
+  async moveJob(id, delta) {
+    const list = $("queue-list");
+    const card = list.querySelector(`[data-id="${id}"]`);
+    const sib = delta < 0 ? card?.previousElementSibling : card?.nextElementSibling;
+    if (!card || !sib || !sib.classList.contains("qcard")) return;
+    delta < 0 ? list.insertBefore(card, sib) : list.insertBefore(sib, card);
+    this.commitOrder();
   },
 
   async setMaxConcurrent(delta) {
@@ -1394,6 +1626,20 @@ const tabFromPath = () => {
 window.addEventListener("popstate", () => {
   const t = tabFromPath();
   if (t !== App.tab) App.show(t);
+});
+App.menuMql.addEventListener("change", (e) => {
+  if (e.matches) App.syncMenuInert();
+  else App.toggleMenu(false, { returnFocus: false });
+});
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { if (document.body.classList.contains("menu-open")) App.toggleMenu(false); return; }
+  if (e.key !== "Tab" || !document.body.classList.contains("menu-open")) return;
+  const focusables = [...$("hdr-menu").querySelectorAll('button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+    .filter((el) => !el.disabled && el.offsetParent !== null);
+  if (!focusables.length) return;
+  const first = focusables[0], last = focusables[focusables.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
 });
 App.typeChanged();
 // Open the tab from the path (/search, /history, …) so a refresh stays put.

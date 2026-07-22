@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Websharr — Sign in</title>
 <link rel="icon" href="/ui/assets/favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -24,11 +24,12 @@
     border-radius:8px; padding:9px 12px; color:var(--text); font:600 14px 'Nunito',sans-serif; outline:none; }
   input:focus { border-color:var(--accent); }
   button { width:100%; margin-top:10px; background:var(--accent); border:none; color:#06202f;
-    border-radius:9px; padding:11px; font:800 15px 'Nunito',sans-serif; cursor:pointer; }
+    border-radius:9px; padding:11px; min-height:44px; font:800 15px 'Nunito',sans-serif; cursor:pointer; }
   button:hover { background:#7ecbf8; }
   #error { display:none; margin-top:14px; padding:9px 12px; border-radius:8px; font-weight:700;
     font-size:13.5px; color:#f8a49e; background:rgba(242,109,100,0.12);
     border:1px solid rgba(242,109,100,0.35); }
+  @media (max-width: 360px) { body { padding: 16px; } }
 </style>
 </head>
 <body>

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Websharr — Setup</title>
 <link rel="icon" href="/ui/assets/favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -30,15 +30,16 @@
   .hint { color:var(--faint); font-size:12.5px; margin:6px 0 0; line-height:1.5; }
   .row { display:flex; align-items:center; gap:10px; margin-top:18px; }
   .test { background:none; border:1px solid var(--border); color:var(--muted); border-radius:8px;
-    padding:8px 14px; font:700 13px 'Nunito',sans-serif; cursor:pointer; }
+    padding:8px 14px; min-height:44px; font:700 13px 'Nunito',sans-serif; cursor:pointer; }
   .test:hover { color:var(--accent); border-color:var(--accent); }
   #test-result { font-size:13px; font-weight:700; flex:1; }
   button[type=submit] { width:100%; margin-top:18px; background:var(--accent); border:none;
-    color:#06202f; border-radius:9px; padding:11px; font:800 15px 'Nunito',sans-serif; cursor:pointer; }
+    color:#06202f; border-radius:9px; padding:11px; min-height:44px; font:800 15px 'Nunito',sans-serif; cursor:pointer; }
   button[type=submit]:hover { background:#7ecbf8; }
   #error { display:none; margin-top:14px; padding:9px 12px; border-radius:8px; font-weight:700;
     font-size:13.5px; color:#f8a49e; background:rgba(242,109,100,0.12);
     border:1px solid rgba(242,109,100,0.35); }
+  @media (max-width: 360px) { body { padding: 16px; } }
 </style>
 </head>
 <body>
