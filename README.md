@@ -33,6 +33,10 @@ In `docker-compose.yml`, adjust the `/downloads` volume so it points to the same
 A monitoring and testing interface runs at **`http://localhost:9797/ui`**
 (the bare domain redirects here; sign-in required, Sonarr-style):
 
+<p align="center">
+  <img src="assets/screenshot-settings.png" alt="Websharr settings screen with Osaka Jade theme, Webshare account status, API key controls and download settings" width="920">
+</p>
+
 - **Queue** — live progress with **pause / resume** and delete per download.
 - **History** — completed/failed downloads with retry and clear.
 - **Search** — manual search whose **Grab** button pushes a release through the
