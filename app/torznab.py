@@ -500,10 +500,14 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
         # so *arr doesn't reject the release as "Unknown" quality.
         if not _RES_RE.search(title) and heights.get(r.ident):
             title = f"{title} {heights[r.ident]}p"
-        # A dub known only from its audio track gets the marker the name lacks,
-        # so title-based custom formats ("CZ" in release title) see it too.
-        marker, marker_re = ("SK", _SK_RE) if audio.get(r.ident) == "Slovak" else ("CZ", _CZ_RE)
-        if audio.get(r.ident) and not marker_re.search(title):
+        # A dub recognised without a marker in its name — by its audio track, or
+        # by being named after the Czech title ("Cerveny trpaslik ...") — gets the
+        # marker added, so title-based custom formats ("CZ" in release title)
+        # see it too.
+        inferred = "" if dub_language(r.name) else audio.get(r.ident) or \
+            ("Czech" if czech_titles and matches_query(czech_titles, r.name) else "")
+        marker, marker_re = ("SK", _SK_RE) if inferred == "Slovak" else ("CZ", _CZ_RE)
+        if inferred and not marker_re.search(title):
             title = f"{title} {marker}"
         ET.SubElement(item, "title").text = title
         ET.SubElement(item, "guid", {"isPermaLink": "false"}).text = f"websharr-{r.ident}"
@@ -529,8 +533,7 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
         # policy grabs the original audio and skips the dub. A file named after
         # the Czech dub title ("Kačeří příběhy ...") is a Czech release even
         # when it carries no "dabing" marker.
-        item_lang = dub_language(r.name) or audio.get(r.ident) or \
-            ("Czech" if czech_titles and matches_query(czech_titles, r.name) else language)
+        item_lang = dub_language(r.name) or inferred or language
         # Emit attrs in both namespaces so the feed parses whether Sonarr/Radarr
         # treats it as Newznab (usenet — the correct choice) or Torznab.
         for ns in (NEWZNAB_NS, TORZNAB_NS):

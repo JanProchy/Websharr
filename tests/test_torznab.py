@@ -258,6 +258,11 @@ def test_feed_tags_czech_for_file_named_after_czech_title(client, fake_webshare,
     for title, lang in by_title.items():
         if "Kaceri" in title:
             assert lang == "Czech"
+            # ...and gains the "CZ" marker its name lacks, for title-based
+            # custom formats; the English original is left alone.
+            assert title.endswith(" CZ")
+        else:
+            assert not title.endswith(" CZ")
 
 
 def test_release_title_asciified():
