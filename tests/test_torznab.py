@@ -501,6 +501,34 @@ def test_search_labels_quality_from_fileinfo(client, fake_webshare):
     assert title == "Skvrna S01E05 - Skvrna 05 - Bestie 1080p"
 
 
+def test_resolution_class():
+    """The appended label must be a resolution *arr knows — a literal "384p" or
+    "800p" parses as Unknown quality and the release is rejected outright."""
+    from app.torznab import resolution_class
+    assert resolution_class(1920, 1080) == 1080
+    assert resolution_class(1920, 800) == 1080    # 2.39:1 crop of a 1080p source
+    assert resolution_class(1440, 1080) == 1080   # 4:3 at 1080p
+    assert resolution_class(3840, 1600) == 2160
+    assert resolution_class(1280, 534) == 720
+    assert resolution_class(768, 576) == 576
+    assert resolution_class(720, 540) == 540
+    assert resolution_class(640, 480) == 480
+    assert resolution_class(640, 384) == 480      # old DVD-rip AVI
+    assert resolution_class(320, 240) == 360
+    assert resolution_class(0, 384) == 480        # width unknown
+    assert resolution_class(0, 0) == 0
+
+
+def test_search_labels_odd_height_with_known_class(client, fake_webshare):
+    fake_webshare.results = [SearchResult("q3", "Skvrna 05 - Bestie.avi", 200_000_000)]
+    fake_webshare.file_infos = {"q3": {"length": 1700, "width": 640, "height": 384,
+                                       "format": "MPEG4", "type": "avi"}}
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "q": "Skvrna", "season": "1", "ep": "5"})
+    title = ET.fromstring(resp.content).findtext("channel/item/title")
+    assert title == "Skvrna S01E05 - Skvrna 05 - Bestie 480p"
+
+
 def test_search_keeps_existing_resolution(client, fake_webshare):
     # Name already has a resolution -> no file_info lookup, left as-is.
     fake_webshare.results = [SearchResult("q2", "Skvrna 05 - Bestie 720p.mkv", 500_000_000)]

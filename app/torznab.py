@@ -238,6 +238,21 @@ def _is_video(name: str) -> bool:
 _RES_RE = re.compile(r"\b(480|540|576|720|1080|2160|4320)p?\b", re.I)
 
 
+def resolution_class(width: int, height: int) -> int:
+    """The standard resolution (360…2160) a video of this size belongs to.
+
+    *arr only parses the labels it knows; a literal "384p" (old DVD-rip AVI) or
+    "800p" (2.39:1 crop of a 1080p source) reads as Unknown quality and the
+    release is rejected. Width decides for cropped widescreen, height for 4:3,
+    whichever puts it higher.
+    """
+    by_width = 2160 if width >= 3200 else 1080 if width >= 1800 else 720 if width >= 1200 else 0
+    by_height = (2160 if height >= 1700 else 1080 if height >= 900 else 720 if height >= 650
+                 else 576 if height >= 560 else 540 if height >= 500
+                 else 480 if height >= 380 else 360 if height > 0 else 0)
+    return max(by_width, by_height)
+
+
 async def _probe(client, results: list[SearchResult]) -> tuple[dict[str, int], dict[str, str]]:
     """Fetch file_info for results whose *name* leaves something open, and
     return (heights, audio): the video height for names without a resolution
@@ -260,7 +275,7 @@ async def _probe(client, results: list[SearchResult]) -> tuple[dict[str, int], d
     heights: dict[str, int] = {}
     audio: dict[str, str] = {}
     for r, info in await asyncio.gather(*(one(r) for r in need)):
-        height = int(info.get("height") or 0)
+        height = resolution_class(int(info.get("width") or 0), int(info.get("height") or 0))
         if height and not _RES_RE.search(r.name):
             heights[r.ident] = height
         lang = audio_language(info.get("audio_languages"))
