@@ -422,9 +422,11 @@ def relevance(queries: list[str], name: str) -> float:
 
 def _render_feed(request: Request, results: list[SearchResult], category: str,
                  *, query: str | None = None, season: str | None = None,
-                 ep: str | None = None, heights: dict[str, int] | None = None,
+                 ep: str | None = None, episodes: dict[str, int] | None = None,
+                 heights: dict[str, int] | None = None,
                  language: str = "", czech_titles: list[str] | None = None) -> Response:
     heights = heights or {}
+    episodes = episodes or {}
     ET.register_namespace("torznab", TORZNAB_NS)
     ET.register_namespace("newznab", NEWZNAB_NS)
     rss = ET.Element("rss", {"version": "2.0"})
@@ -437,7 +439,8 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
 
     for r in results:
         item = ET.SubElement(channel, "item")
-        title = release_title(query, season, ep, r.name) if query is not None else \
+        title = release_title(query, season, episodes.get(r.ident, ep), r.name) \
+            if query is not None else \
             (r.name.rsplit(".", 1)[0] if "." in r.name else r.name)
         # Label quality from the real video height when the name lacks one,
         # so *arr doesn't reject the release as "Unknown" quality.
@@ -533,6 +536,7 @@ async def torznab_api(request: Request):
     client = request.app.state.webshare
     seen: set[str] = set()
     merged: list[SearchResult] = []
+    episodes: dict[str, int] = {}  # season search: each file's own episode number
     for query in queries:
         try:
             results = await client.search(query, limit=limit, offset=offset)
@@ -552,6 +556,14 @@ async def torznab_api(request: Request):
                     continue  # OR fulltext returns every episode; keep the asked one
                 if want_season is not None and fs is not None and fs != want_season:
                     continue  # an S02E02 file is not the requested S01E02
+                if want_ep is None:
+                    # Season search (Sonarr's automatic search when several
+                    # episodes of a season are missing). Webshare has no season
+                    # packs, so release each file under its own episode; a bare
+                    # "05" only counts in season 1 (see build_queries).
+                    if fe is None or (fs is None and want_season != 1):
+                        continue
+                    episodes[r.ident] = fe
             seen.add(r.ident)
             merged.append(r)
 
@@ -561,7 +573,7 @@ async def torznab_api(request: Request):
     heights = await _resolutions(client, shown)
     return _render_feed(request, shown, category, heights=heights,
                         query=display, season=(season if t == "tvsearch" else None), ep=ep,
-                        language=language, czech_titles=czech_titles)
+                        episodes=episodes, language=language, czech_titles=czech_titles)
 
 
 @router.get("/torznab/nzb/{ident}")

@@ -314,6 +314,52 @@ def test_search_drops_other_season_with_same_episode(client, fake_webshare, monk
     assert len(titles) == 1 and "Wronguay" in titles[0]
 
 
+def test_season_search_returns_individual_episodes(client, fake_webshare, monkeypatch):
+    """Sonarr's automatic search for a season with several missing episodes
+    sends season=N without ep. Webshare has no season packs, so every file must
+    be released under its *own* SxxEyy — labelling them all "Futurama S08 - ..."
+    made each look like a (bogus) season pack and Sonarr grabbed nothing."""
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "")
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("e4", "Futurama s08e04 - Cesta k parazitum 1080p.mkv", 2_000_000_000),
+        SearchResult("e2", "Futurama S08E02 Bahnem zapomenute deti 1080p WEB-DL.mkv", 1_900_000_000),
+        SearchResult("s7", "Futurama S07E04 1080p.mkv", 1_800_000_000),       # other season
+        SearchResult("noep", "Futurama - bonusy 1080p.mkv", 1_700_000_000),   # no episode
+        SearchResult("bare", "Futurama 05 - neco 1080p.mkv", 1_600_000_000),  # bare no., S08
+    ]
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "q": "Futurama", "season": "8"})
+    root = ET.fromstring(resp.content)
+    titles = [i.findtext("title") for i in root.findall("channel/item")]
+    assert titles == [
+        "Futurama S08E04 - Futurama - Cesta k parazitum 1080p",
+        "Futurama S08E02 - Futurama Bahnem zapomenute deti 1080p WEB-DL",
+    ]
+
+
+def test_season_one_search_accepts_bare_episode_numbers(client, fake_webshare, monkeypatch):
+    # CZ season-1 convention "Skvrna 05 - Bestie": the bare number is the episode.
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "")
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("b5", "Skvrna 05 - Bestie 1080p.mkv", 900_000_000),
+        SearchResult("b1", "Skvrna 01 - Pohreb 1080p.mkv", 800_000_000),
+    ]
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "q": "Skvrna", "season": "1"})
+    root = ET.fromstring(resp.content)
+    titles = [i.findtext("title") for i in root.findall("channel/item")]
+    assert titles == [
+        "Skvrna S01E05 - Skvrna 05 - Bestie 1080p",
+        "Skvrna S01E01 - Skvrna 01 - Pohreb 1080p",
+    ]
+
+
 def test_search_filters_garbage_and_wrong_episode(client, fake_webshare):
     fake_webshare.fuzzy = True  # Webshare returns everything, like real fulltext
     fake_webshare.results = [
