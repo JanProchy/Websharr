@@ -235,7 +235,8 @@ class WebshareClient:
         return link
 
     async def file_info(self, ident: str) -> dict:
-        """Per-file metadata: duration (s), resolution, codec. One API call."""
+        """Per-file metadata: duration (s), resolution, codec, audio-track
+        languages. One API call."""
         root = await self._authed_post("/file_info/", {"ident": ident})
 
         def _int(tag: str) -> int:
@@ -250,6 +251,12 @@ class WebshareClient:
             "height": _int("height"),
             "format": _text(root, "format", ""),  # video codec, e.g. H264
             "type": _text(root, "type", ""),       # container, e.g. mkv
+            # ISO 639-2 codes of the tagged audio tracks, e.g. ["CZE", "ENG"].
+            "audio_languages": [
+                el.text.strip().upper()
+                for audio in root.iter("audio") for el in audio.iter("language")
+                if el.text and el.text.strip()
+            ],
         }
 
     async def account_status(self) -> dict:

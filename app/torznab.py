@@ -93,6 +93,25 @@ def dub_language(name: str) -> str:
     return "Czech"
 
 
+# Audio-track language codes (Webshare file_info) that mean a CZ/SK release.
+_AUDIO_CZECH = {"CZE", "CES", "CS", "CZ"}
+_AUDIO_SLOVAK = {"SLO", "SLK", "SK"}
+
+
+def audio_language(codes) -> str:
+    """"Czech"/"Slovak" when the file carries such an audio track, else "".
+
+    Only a positive signal: track tags are often missing or wrong, so their
+    absence never overrides a marker in the file name.
+    """
+    codes = {(c or "").strip().upper() for c in codes or ()}
+    if codes & _AUDIO_CZECH:
+        return "Czech"
+    if codes & _AUDIO_SLOVAK:
+        return "Slovak"
+    return ""
+
+
 def _xml_response(element: ET.Element, status_code: int = 200) -> Response:
     body = ET.tostring(element, encoding="utf-8", xml_declaration=True)
     return Response(content=body, media_type="application/xml", status_code=status_code)
@@ -219,25 +238,35 @@ def _is_video(name: str) -> bool:
 _RES_RE = re.compile(r"\b(480|540|576|720|1080|2160|4320)p?\b", re.I)
 
 
-async def _resolutions(client, results: list[SearchResult]) -> dict[str, int]:
-    """Fetch video height (via file_info) for results whose name has no
-    resolution token, so we can label quality — many CZ files ship without
-    one and Sonarr/Radarr reject them as 'Unknown' quality otherwise."""
-    need = [r for r in results if not _RES_RE.search(r.name)]
+async def _probe(client, results: list[SearchResult]) -> tuple[dict[str, int], dict[str, str]]:
+    """Fetch file_info for results whose *name* leaves something open, and
+    return (heights, audio): the video height for names without a resolution
+    token — many CZ files ship without one and Sonarr/Radarr reject them as
+    'Unknown' quality otherwise — and "Czech"/"Slovak" for names without a
+    language marker whose audio track says so (a TV-rip dub named just
+    "... 1080p WEB-DL prima+")."""
+    need = [r for r in results if not _RES_RE.search(r.name) or not dub_language(r.name)]
     if not need:
-        return {}
+        return {}, {}
     sem = asyncio.Semaphore(6)
 
     async def one(r: SearchResult):
         async with sem:
             try:
-                info = await client.file_info(r.ident)
-                return r.ident, int(info.get("height") or 0)
+                return r, await client.file_info(r.ident)
             except (WebshareError, httpx.HTTPError):
-                return r.ident, 0
+                return r, {}
 
-    pairs = await asyncio.gather(*(one(r) for r in need))
-    return {ident: h for ident, h in pairs if h}
+    heights: dict[str, int] = {}
+    audio: dict[str, str] = {}
+    for r, info in await asyncio.gather(*(one(r) for r in need)):
+        height = int(info.get("height") or 0)
+        if height and not _RES_RE.search(r.name):
+            heights[r.ident] = height
+        lang = audio_language(info.get("audio_languages"))
+        if lang and not dub_language(r.name):
+            audio[r.ident] = lang
+    return heights, audio
 
 
 _EP_TOKEN = re.compile(r"^(s\d{1,2}e\d{1,3}|s\d{1,2}|\d{1,2}x\d{1,3}|\d{1,4})$")
@@ -429,9 +458,10 @@ def relevance(queries: list[str], name: str) -> float:
 def _render_feed(request: Request, results: list[SearchResult], category: str,
                  *, query: str | None = None, season: str | None = None,
                  ep: str | None = None, episodes: dict[str, int] | None = None,
-                 heights: dict[str, int] | None = None,
+                 heights: dict[str, int] | None = None, audio: dict[str, str] | None = None,
                  language: str = "", czech_titles: list[str] | None = None) -> Response:
     heights = heights or {}
+    audio = audio or {}
     episodes = episodes or {}
     ET.register_namespace("torznab", TORZNAB_NS)
     ET.register_namespace("newznab", NEWZNAB_NS)
@@ -452,6 +482,11 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
         # so *arr doesn't reject the release as "Unknown" quality.
         if not _RES_RE.search(title) and heights.get(r.ident):
             title = f"{title} {heights[r.ident]}p"
+        # A dub known only from its audio track gets the marker the name lacks,
+        # so title-based custom formats ("CZ" in release title) see it too.
+        marker, marker_re = ("SK", _SK_RE) if audio.get(r.ident) == "Slovak" else ("CZ", _CZ_RE)
+        if audio.get(r.ident) and not marker_re.search(title):
+            title = f"{title} {marker}"
         ET.SubElement(item, "title").text = title
         ET.SubElement(item, "guid", {"isPermaLink": "false"}).text = f"websharr-{r.ident}"
         # The saved file keeps the raw filename; the folder/title (nzbname) carries
@@ -478,7 +513,7 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
         # policy grabs the original audio and skips the dub. A file named after
         # the Czech dub title ("Kačeří příběhy ...") is a Czech release even
         # when it carries no "dabing" marker.
-        item_lang = dub_language(r.name) or \
+        item_lang = dub_language(r.name) or audio.get(r.ident) or \
             ("Czech" if czech_titles and matches_query(czech_titles, r.name) else language)
         # Emit attrs in both namespaces so the feed parses whether Sonarr/Radarr
         # treats it as Newznab (usenet — the correct choice) or Torznab.
@@ -576,8 +611,8 @@ async def torznab_api(request: Request):
     merged.sort(key=lambda r: (-relevance(queries, r.name), -r.size))
     logger.info("Newznab %s q=%r -> %d results", t, q, len(merged))
     shown = merged[:limit]
-    heights = await _resolutions(client, shown)
-    return _render_feed(request, shown, category, heights=heights,
+    heights, audio = await _probe(client, shown)
+    return _render_feed(request, shown, category, heights=heights, audio=audio,
                         query=display, season=(season if t == "tvsearch" else None), ep=ep,
                         episodes=episodes, language=language, czech_titles=czech_titles)
 

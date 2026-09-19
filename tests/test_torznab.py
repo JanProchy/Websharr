@@ -506,6 +506,49 @@ def test_search_keeps_existing_resolution(client, fake_webshare):
     assert title == "Skvrna S01E05 - Skvrna 05 - Bestie 720p"
 
 
+def test_audio_track_language_tags_czech_dub_without_name_marker(client, fake_webshare, monkeypatch):
+    """A real Czech dub whose name carries no CZ/dabing marker ("... 1080p
+    WEB-DL prima+") is recognised from its audio track (Webshare file_info):
+    tagged Czech, and the title gains a "CZ" marker for title-based custom
+    formats. An English-audio file with a Czech episode title stays original."""
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "")
+    fake_webshare.results = [
+        SearchResult("dub", "Futurama S08E02 Bahnem zapomenute deti 1080p WEB-DL prima+.mkv",
+                     1_500_000_000),
+        SearchResult("eng", "Futurama s08e02 - Bahnem zapomenute deti 2160p.mkv", 1_400_000_000),
+        SearchResult("subs", "Futurama S08E02 1080p CZ titulky.mkv", 1_300_000_000),
+    ]
+    info = {"length": 1400, "width": 1920, "height": 1080, "format": "H264", "type": "mkv"}
+    fake_webshare.file_infos = {
+        "dub": {**info, "audio_languages": ["CZE"]},
+        "eng": {**info, "audio_languages": ["ENG"]},
+        "subs": {**info, "audio_languages": ["ENG"]},
+    }
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "q": "Futurama", "season": "8", "ep": "2"})
+    got = {}
+    for it in ET.fromstring(resp.content).findall("channel/item"):
+        attrs = {a.get("name"): a.get("value") for a in it.findall(f"{NZNS}attr")}
+        got[it.findtext("guid")] = (it.findtext("title"), attrs.get("language"))
+    assert got["websharr-dub"] == (
+        "Futurama S08E02 - Futurama Bahnem zapomenute deti 1080p WEB-DL prima+ CZ", "Czech")
+    assert got["websharr-eng"] == (
+        "Futurama S08E02 - Futurama - Bahnem zapomenute deti 2160p", None)
+    assert got["websharr-subs"] == ("Futurama S08E02 - Futurama 1080p CZ titulky", None)
+
+
+def test_audio_language_mapping():
+    from app.torznab import audio_language
+    assert audio_language(["CZE", "ENG"]) == "Czech"
+    assert audio_language(["cze"]) == "Czech"
+    assert audio_language(["SLO"]) == "Slovak"
+    assert audio_language(["SLK", "CZE"]) == "Czech"
+    assert audio_language(["ENG"]) == ""
+    assert audio_language([]) == ""
+
+
 def test_nzb_download(client):
     resp = client.get("/torznab/nzb/id1", params={
         "apikey": "testkey", "name": "Zaklinac.S01E05.1080p.CZ.mkv", "size": "4000000000",
