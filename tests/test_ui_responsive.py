@@ -178,3 +178,13 @@ def test_theme_filter_applies_to_brand_and_empty_state_logos(client):
             f'  html[data-theme="{theme}"] .empty img'
         )
         assert selector in html
+
+
+def test_queue_card_surfaces_link_retry_state(client):
+    """A job waiting on a temporary Webshare link error holds a download slot
+    at 0 B/s; the card and the summary must say it is retrying, and why."""
+    client.post("/ui/api/setup", json={"username": "u", "password": "pass1234"})
+    html = client.get("/ui").text
+    assert "const retrying = dl && !!j.error;" in html
+    assert '<div class="qnote" role="status"></div>' in html
+    assert "retrying` : \"\"}" in html
