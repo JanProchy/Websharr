@@ -9,10 +9,12 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+import app.downloads as downloads_module
 import app.main as app_main
 from app.config import config
 from app.main import app
 from app.nzb import build_nzb
+from app.webshare import WebshareError
 
 from .conftest import FakeWebshareClient, wait_for
 
@@ -194,6 +196,39 @@ def test_retry_failed_job(client, fake_webshare, tmp_path):
         assert wait_for(lambda: (j := manager.get(nzo_id)) and j.status == "completed")
         job = manager.get(nzo_id)
         assert (Path(job.storage) / "Retry.Me.2024.mkv").read_bytes() == payload
+    finally:
+        httpd.shutdown()
+
+
+def test_temporary_file_link_error_retries_same_job(client, fake_webshare, tmp_path,
+                                                     monkeypatch):
+    """A transient Webshare link error must stay in Websharr's queue instead of
+    becoming a failed SAB job that makes Sonarr repeatedly grab the release."""
+    payload = b"eventually-available" * 1000
+    httpd, _ = _serve(payload, support_range=True)
+    attempts = 0
+
+    async def flaky_file_link(ident: str) -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise WebshareError("Webshare /file_link/ failed: File temporarily unavailable.")
+        return f"http://127.0.0.1:{httpd.server_address[1]}/f.mkv"
+
+    monkeypatch.setattr(fake_webshare, "file_link", flaky_file_link)
+    monkeypatch.setattr(downloads_module, "TRANSIENT_LINK_RETRY_DELAYS", (0, 0), raising=False)
+    try:
+        nzb = build_nzb("temporary1", "Eventually.Available.mkv", len(payload))
+        nzo_id = client.post(
+            "/sabnzbd/api",
+            params={"mode": "addfile", "apikey": "testkey", "cat": "tv"},
+            files={"nzbfile": ("Show S01E01.nzb", nzb.encode(), "application/x-nzb")},
+        ).json()["nzo_ids"][0]
+
+        manager = app.state.downloads
+        assert wait_for(lambda: manager.get(nzo_id).status == "completed")
+        assert attempts == 3
+        assert (Path(manager.get(nzo_id).storage) / "Eventually.Available.mkv").read_bytes() == payload
     finally:
         httpd.shutdown()
 

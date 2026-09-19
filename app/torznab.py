@@ -65,28 +65,30 @@ def lang_name(code: str) -> str:
     return _LANG_NAMES.get((code or "").strip().lower(), "")
 
 
-# Filename markers of a Czech/Slovak dub (audio replaced), as opposed to the
-# original audio with subtitles ("titulky"). Used to tag a dubbed release with
-# the dub language instead of the title's original language.
+# Filename markers of Czech/Slovak audio, as opposed to the original audio with
+# subtitles ("titulky"). On Webshare a standalone CZ/SK marker is the normal
+# way uploaders identify the audio language, even when "dabing" is omitted.
 _DUB_RE = re.compile(r"\bdab(?:ing|ovan\w*|\b)", re.IGNORECASE)
 _SK_RE = re.compile(r"\b(?:sk|slovensk\w*|slovak)\b", re.IGNORECASE)
 _CZ_RE = re.compile(r"\b(?:cz|cesk\w*|česk\w*|czech)\b", re.IGNORECASE)
-# A full "CZECH"/"SLOVAK" word names the audio language (scene convention,
-# e.g. "...SLOVAK.1080p.WEB..."); a bare "CZ"/"SK" is too ambiguous (often
-# subs or region). Doesn't apply when the name marks subtitles instead.
-_LANG_WORD_RE = re.compile(r"\b(?:czech|slovak)\b", re.IGNORECASE)
 _SUBS_RE = re.compile(r"\b(?:titulky|tit|subs?|subtitles)\b", re.IGNORECASE)
 
 
 def dub_language(name: str) -> str:
-    """"Czech"/"Slovak" when the file name signals a CZ/SK dub, else ""."""
+    """"Czech"/"Slovak" when the file name signals CZ/SK audio, else ""."""
     name = name or ""
-    if not _DUB_RE.search(name) and \
-            not (_LANG_WORD_RE.search(name) and not _SUBS_RE.search(name)):
+    has_dub = bool(_DUB_RE.search(name))
+    has_czech = bool(_CZ_RE.search(name))
+    has_slovak = bool(_SK_RE.search(name))
+    if not (has_dub or has_czech or has_slovak):
+        return ""
+    # A language marker followed by an explicit subtitle marker describes the
+    # subtitles, not the audio. Explicit "dabing" still wins when both appear.
+    if _SUBS_RE.search(name) and not has_dub:
         return ""
     # A dub marked SK (and not CZ) is Slovak; otherwise assume Czech (the default
     # on Webshare, where a bare "Dabing" is Czech).
-    if _SK_RE.search(name) and not _CZ_RE.search(name):
+    if has_slovak and not has_czech:
         return "Slovak"
     return "Czech"
 
@@ -394,12 +396,16 @@ def file_marker(query, name: str) -> tuple[int | None, int | None]:
         series = _series_tokens(title)
         if series and ntoks[:len(series)] != series:
             continue  # this title isn't the one the file starts with
+        is_special = False
         for tk in ntoks[len(series):]:
+            if tk in ("special", "specials"):
+                is_special = True
+                continue
             m = re.match(r"^s(\d{1,2})e(\d{1,3})$", tk) or re.match(r"^(\d{1,2})x(\d{1,3})$", tk)
             if m:
                 return int(m.group(1)), int(m.group(2))
             if tk.isdigit() and len(tk) <= 2:  # bare episode number (skip years/1080)
-                return None, int(tk)
+                return (0 if is_special else None), int(tk)
         break
     return None, None
 

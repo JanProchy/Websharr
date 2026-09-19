@@ -176,6 +176,7 @@ def test_dub_language_and_lang_name():
     from app.torznab import dub_language, lang_name
     assert dub_language("Bez.vedomi.S01E01.CZ.Dabing.1080p.mkv") == "Czech"
     assert dub_language("Bez.vedomi.S01E01.dabing.mkv") == "Czech"  # bare dabing = Czech
+    assert dub_language("Futurama FHD 1080p CZ.mkv") == "Czech"
     assert dub_language("Film.2020.SK.dabing.mkv") == "Slovak"
     assert dub_language("Film.2020.CZ.SK.dabing.mkv") == "Czech"    # CZ present -> Czech
     assert dub_language("Movie.2020.1080p.CZ.titulky.mkv") == ""    # subtitles, not a dub
@@ -183,9 +184,10 @@ def test_dub_language_and_lang_name():
     # A full CZECH/SLOVAK word marks the audio language (scene convention)...
     assert dub_language("DuckTales.S01E01.SLOVAK.1080p.AI.WEB.H264-GRP.mkv") == "Slovak"
     assert dub_language("Movie.2020.CZECH.1080p.WEB.mkv") == "Czech"
-    # ...but not when the name marks subtitles, and bare CZ/SK stays ambiguous.
+    # ...including bare CZ/SK markers, unless the name explicitly marks subtitles.
     assert dub_language("Movie.2020.CZECH.subs.1080p.mkv") == ""
-    assert dub_language("Movie.2020.1080p.CZ.mkv") == ""
+    assert dub_language("Movie.2020.1080p.CZ.mkv") == "Czech"
+    assert dub_language("Movie.2020.1080p.SK.mkv") == "Slovak"
     assert lang_name("en") == "English"
     assert lang_name("cs") == "Czech"
     assert lang_name("") == "" and lang_name("xx") == ""
@@ -210,6 +212,7 @@ def test_feed_tags_language_original_and_dub(client, fake_webshare, monkeypatch)
     fake_webshare.results = [
         SearchResult("o1", "Sleepers.S01E01.1080p.mkv", 2_000_000_000),
         SearchResult("o2", "Sleepers.S01E01.CZ.Dabing.1080p.mkv", 2_100_000_000),
+        SearchResult("o3", "Sleepers.S01E01.FHD.1080p.CZ.mkv", 2_200_000_000),
     ]
     resp = client.get("/torznab/api", params={
         "t": "tvsearch", "apikey": "testkey", "q": "Sleepers", "season": "1", "ep": "1"})
@@ -220,7 +223,7 @@ def test_feed_tags_language_original_and_dub(client, fake_webshare, monkeypatch)
         by_ident[it.findtext("title")] = attrs.get("language")
     langs = list(by_ident.values())
     assert "English" in langs   # original-audio file tagged with the original language
-    assert "Czech" in langs     # dubbed file tagged with the dub language
+    assert langs.count("Czech") == 2  # explicit dabing and bare CZ are both Czech audio
 
 
 def test_feed_tags_czech_for_file_named_after_czech_title(client, fake_webshare, monkeypatch):
@@ -289,6 +292,7 @@ def test_file_marker_reads_season():
     assert file_marker("Zaklinac", "Zaklinac.S02E03.1080p.mkv") == (2, 3)
     assert file_marker("Zaklinac", "Zaklinac 1x07 dabing.avi") == (1, 7)
     assert file_marker("Skvrna", "Skvrna 05 - Bestie.mp4") == (None, 5)
+    assert file_marker("Futurama", "Futurama Fialovy Trpaslik special 06.mkv") == (0, 6)
     assert file_marker("Skvrna", "Skvrna - Bestie 1080p.mkv") == (None, None)
 
 
@@ -358,6 +362,25 @@ def test_season_one_search_accepts_bare_episode_numbers(client, fake_webshare, m
         "Skvrna S01E05 - Skvrna 05 - Bestie 1080p",
         "Skvrna S01E01 - Skvrna 01 - Pohreb 1080p",
     ]
+
+
+def test_regular_episode_search_drops_explicit_special(client, fake_webshare, monkeypatch):
+    """A Webshare filename labelled `special 03` is S00E03, not whichever
+    regular-season E03 Sonarr happened to request."""
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "")
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("regular", "Futurama.S04E03.1080p.CZ.mkv", 1_000_000_000),
+        SearchResult("special", "Futurama Milion A Jedno Chapadlo FHD 1080p CZ special 03.mkv",
+                     2_000_000_000),
+    ]
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "q": "Futurama", "season": "4", "ep": "3"})
+    root = ET.fromstring(resp.content)
+    titles = [it.findtext("title") for it in root.findall("channel/item")]
+    assert titles == ["Futurama S04E03 - Futurama.1080p.CZ"]
 
 
 def test_search_filters_garbage_and_wrong_episode(client, fake_webshare):
