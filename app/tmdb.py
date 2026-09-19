@@ -97,6 +97,32 @@ async def _alt_titles(client, kind: str, tmdb_id) -> list:
         return []
 
 
+async def _czech_translation(client, kind: str, tmdb_id) -> list[str]:
+    """The localized Czech name(s) from TMDB's translations, or [].
+
+    Many dubbed titles have no CZ *alternative* title at all — Red Dwarf's
+    "Červený trpaslík" exists only as the cs translation's name.
+    """
+    if not tmdb_id:
+        return []
+    try:
+        r = await client.get(f"{_BASE}/{kind}/{tmdb_id}/translations")
+        if r.status_code != 200:
+            return []
+        items = r.json().get("translations") or []
+    except (httpx.HTTPError, KeyError, ValueError):
+        return []
+    out = []
+    for it in items:
+        if (it.get("iso_639_1") or "").lower() == "cs":
+            data = it.get("data") or {}
+            # TV carries "name", movie "title"; empty when not localized.
+            title = (data.get("name") or data.get("title") or "").strip()
+            if title:
+                out.append(title)
+    return out
+
+
 def _year(entry: dict) -> int:
     date = entry.get("first_air_date") or entry.get("release_date") or ""
     try:
@@ -113,9 +139,10 @@ async def _resolve(client, entry: dict, kind: str) -> tuple[str, str, str, tuple
     Sonarr/Radarr call the show and match releases against — and keep the foreign
     name as the search term.
 
-    For a non-Czech-origin title also collect the CZ alternative titles: dubbed
-    Webshare files are named after the Czech dub ("Kačeří příběhy"), which is
-    not the original title so the orig/display logic never finds it.
+    For a non-Czech-origin title also collect the Czech names — CZ alternative
+    titles and the cs translation: dubbed Webshare files are named after the
+    Czech dub ("Kačeří příběhy"), which is not the original title so the
+    orig/display logic never finds it.
     """
     disp, orig = _titles(entry, kind)
     lang = _language(entry)
@@ -130,7 +157,10 @@ async def _resolve(client, entry: dict, kind: str) -> tuple[str, str, str, tuple
                 orig, disp = disp, eng
         if need_czech:
             known = {disp.casefold(), orig.casefold()}
-            czech = [t for t in _pick_czech(alts) if t.casefold() not in known]
+            for t in _pick_czech(alts) + await _czech_translation(client, kind, entry.get("id")):
+                if t.casefold() not in known:
+                    known.add(t.casefold())
+                    czech.append(t)
     return disp, orig, lang, tuple(czech), _year(entry)
 
 

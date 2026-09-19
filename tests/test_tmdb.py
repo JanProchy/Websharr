@@ -86,3 +86,53 @@ def test_resolve_english_show_without_czech_titles():
     disp, orig, lang, czech, year = asyncio.run(tmdb._resolve(_Client([]), entry, "tv"))
     assert disp == "The Office" and orig == "" and lang == "en" and czech == ()
     assert year == 0  # no air date in the entry
+
+
+class _RoutedClient:
+    """Serves alternative_titles and translations from separate payloads."""
+
+    def __init__(self, alt_titles, translations):
+        self._alt, self._tr = alt_titles, translations
+
+    async def get(self, url, params=None):
+        if url.endswith("/translations"):
+            return _Resp({"translations": self._tr})
+        return _Resp({"results": self._alt})
+
+
+def test_resolve_picks_czech_translation_name():
+    # Red Dwarf has no CZ *alternative* title; its Czech name lives only in the
+    # cs translation. An empty or same-as-display translation adds nothing.
+    entry = {"id": 326, "name": "Red Dwarf", "original_name": "Red Dwarf",
+             "original_language": "en", "first_air_date": "1988-02-15"}
+    client = _RoutedClient([], [
+        {"iso_639_1": "cs", "iso_3166_1": "CZ", "data": {"name": "Červený trpaslík"}},
+        {"iso_639_1": "sk", "iso_3166_1": "SK", "data": {"name": "Červený trpaslík"}},
+        {"iso_639_1": "de", "iso_3166_1": "DE", "data": {"name": "Red Dwarf DE"}},
+    ])
+    disp, orig, lang, czech, year = asyncio.run(tmdb._resolve(client, entry, "tv"))
+    assert disp == "Red Dwarf" and czech == ("Červený trpaslík",)
+
+    entry = {"id": 615, "name": "Futurama", "original_name": "Futurama",
+             "original_language": "en"}
+    client = _RoutedClient([], [{"iso_639_1": "cs", "data": {"name": ""}},
+                                {"iso_639_1": "cs", "data": {"name": "Futurama"}}])
+    assert asyncio.run(tmdb._resolve(client, entry, "tv"))[3] == ()
+
+
+def test_resolve_merges_czech_alt_titles_and_translation():
+    entry = {"id": 720, "name": "DuckTales", "original_name": "DuckTales",
+             "original_language": "en"}
+    client = _RoutedClient(
+        [{"iso_3166_1": "CZ", "title": "Kačeří příběhy"}, {"iso_3166_1": "CZ", "title": "My z Kačerova"}],
+        [{"iso_639_1": "cs", "data": {"name": "Kačeří příběhy"}}])
+    assert asyncio.run(tmdb._resolve(client, entry, "tv"))[3] == \
+        ("Kačeří příběhy", "My z Kačerova")
+
+
+def test_resolve_movie_uses_translation_title():
+    entry = {"id": 9, "title": "The Shawshank Redemption",
+             "original_title": "The Shawshank Redemption", "original_language": "en"}
+    client = _RoutedClient([], [{"iso_639_1": "cs", "data": {"title": "Vykoupení z věznice Shawshank"}}])
+    assert asyncio.run(tmdb._resolve(client, entry, "movie"))[3] == \
+        ("Vykoupení z věznice Shawshank",)
