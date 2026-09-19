@@ -13,9 +13,9 @@ parses correctly either way.
 
 import asyncio
 import email.utils
+import hashlib
 import logging
 import re
-import time
 import unicodedata
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -455,6 +455,25 @@ def relevance(queries: list[str], name: str) -> float:
     return best
 
 
+# Window the synthetic publish dates fall into (see _pub_date).
+_PUB_EPOCH = 1640995200  # 2022-01-01 UTC
+_PUB_SPAN = 365 * 86400
+
+
+def _pub_date(ident: str) -> str:
+    """A fixed, per-file publish date (RFC 2822).
+
+    Webshare search has no upload date, and *arr needs one. It must not move:
+    Sonarr/Radarr recognise a blocklisted usenet release by title + *exact*
+    publish date, so "now" meant a failed release was never seen as blocklisted
+    and was grabbed again on every search. Derived from the ident so two files
+    sharing a release title still differ; years old is harmless (retention is
+    the only age check, and age merely breaks ties between equal releases).
+    """
+    offset = int(hashlib.md5(ident.encode()).hexdigest(), 16) % _PUB_SPAN
+    return email.utils.formatdate(_PUB_EPOCH + offset)
+
+
 def _render_feed(request: Request, results: list[SearchResult], category: str,
                  *, query: str | None = None, season: str | None = None,
                  ep: str | None = None, episodes: dict[str, int] | None = None,
@@ -471,7 +490,6 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
     ET.SubElement(channel, "description").text = "Webshare.cz Newznab bridge"
 
     base = str(request.base_url).rstrip("/")
-    now_rfc2822 = email.utils.formatdate(time.time())
 
     for r in results:
         item = ET.SubElement(channel, "item")
@@ -499,9 +517,7 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
             f"&nzbname={urllib.parse.quote(title)}"
         )
         ET.SubElement(item, "link").text = link
-        # Webshare has no upload-date in search results; use "now" so *arr
-        # treats results as fresh rather than rejecting them by age.
-        ET.SubElement(item, "pubDate").text = now_rfc2822
+        ET.SubElement(item, "pubDate").text = _pub_date(r.ident)
         ET.SubElement(item, "size").text = str(r.size)
         ET.SubElement(item, "enclosure", {
             "url": link,

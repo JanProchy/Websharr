@@ -199,9 +199,6 @@
   .qstatus.downloading { color: var(--accent); background: rgba(var(--accent-rgb),.14); }
   .qstatus.queued { color: var(--grey); background: rgba(var(--grey-rgb),.12); }
   .qstatus.paused { color: var(--warning); background: rgba(var(--warning-rgb),.14); }
-  .qstatus.retrying { color: var(--warning); background: rgba(var(--warning-rgb),.14); }
-  .qnote { display: none; margin-top: 6px; color: var(--warning); font-size: 12.5px; font-weight: 600; }
-  .qnote.on { display: block; }
   .qidentity { flex: 1; min-width: 0; }
   .qname { display: block; font-weight: 700; font-size: 14.5px; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis; }
@@ -1226,12 +1223,10 @@ const App = {
 
   renderQueue(jobs) {
     $("queue-empty").style.display = jobs.length ? "none" : "";
-    const active = jobs.filter((j) => j.status === "downloading");
-    const dl = active.filter((j) => !j.error);
-    const retry = active.length - dl.length;
+    const dl = jobs.filter((j) => j.status === "downloading");
     const speed = dl.reduce((a, j) => a + j.speed, 0);
     $("queue-summary").textContent = jobs.length
-      ? `${dl.length} downloading${retry ? ` · ${retry} retrying` : ""} · ${jobs.length - active.length} queued · ${fmtSpeed(speed)} total`
+      ? `${dl.length} downloading · ${jobs.length - dl.length} queued · ${fmtSpeed(speed)} total`
       : "nothing downloading";
 
     const list = $("queue-list");
@@ -1242,9 +1237,6 @@ const App = {
       const pct = j.size ? Math.min(100, j.downloaded * 100 / j.size) : 0;
       const dl = j.status === "downloading";
       const paused = j.status === "paused";
-      // A job waiting on a temporary Webshare error holds its slot without
-      // transferring anything; say so instead of showing a silent 0 B/s.
-      const retrying = dl && !!j.error;
       if (!card) {
         card = document.createElement("div");
         card.className = "qcard";
@@ -1265,7 +1257,6 @@ const App = {
             </button>
           </div>
           <div class="qprogress"><div class="track"><div class="bar" style="width:0%"></div></div></div>
-          <div class="qnote" role="status"></div>
           <div class="qfooter">
             <div class="qstats"><span class="pct"></span><span class="speed"></span><span class="eta"></span></div>
             <div class="qactions">
@@ -1289,13 +1280,9 @@ const App = {
       }
       card.dataset.status = j.status;
       const status = card.querySelector(".qstatus");
-      status.className = "qstatus " + (retrying ? "retrying" : j.status);
-      const label = paused ? "Paused" : retrying ? "Retrying" : dl ? "Downloading" : "Queued";
-      status.setAttribute("aria-label", label);
-      status.title = label;
-      const note = card.querySelector(".qnote");
-      note.textContent = retrying ? j.error : "";
-      note.classList.toggle("on", retrying);
+      status.className = "qstatus " + j.status;
+      status.setAttribute("aria-label", paused ? "Paused" : dl ? "Downloading" : "Queued");
+      status.title = paused ? "Paused" : dl ? "Downloading" : "Queued";
       status.innerHTML = paused
         ? `<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="4" y="3" width="3" height="10" rx="1"/><rect x="9" y="3" width="3" height="10" rx="1"/></svg>`
         : dl
@@ -1316,7 +1303,7 @@ const App = {
       bar.classList.toggle("paused", paused);
       card.querySelector(".pct").textContent = Math.floor(pct) + "%";
       card.querySelector(".pct").style.color = dl ? "var(--text)" : "var(--faint)";
-      card.querySelector(".speed").textContent = retrying ? "retrying" : dl ? fmtSpeed(j.speed) : paused ? "paused" : "—";
+      card.querySelector(".speed").textContent = dl ? fmtSpeed(j.speed) : paused ? "paused" : "—";
       card.querySelector(".eta").textContent = fmtEta(j);
     }
     for (const card of [...list.children]) if (!seen.has(card.dataset.id)) card.remove();

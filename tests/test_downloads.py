@@ -200,37 +200,29 @@ def test_retry_failed_job(client, fake_webshare, tmp_path):
         httpd.shutdown()
 
 
-def test_temporary_file_link_error_retries_same_job(client, fake_webshare, tmp_path,
-                                                     monkeypatch):
-    """A transient Webshare link error must stay in Websharr's queue instead of
-    becoming a failed SAB job that makes Sonarr repeatedly grab the release."""
-    payload = b"eventually-available" * 1000
-    httpd, _ = _serve(payload, support_range=True)
+def test_temporary_file_link_error_fails_immediately(client, fake_webshare, monkeypatch):
+    """Webshare's "File temporarily unavailable" never recovers in practice, so
+    the job must fail at once — no retries holding a download slot — and let
+    Sonarr blocklist the release and grab another one."""
     attempts = 0
 
-    async def flaky_file_link(ident: str) -> str:
+    async def dead_file_link(ident: str) -> str:
         nonlocal attempts
         attempts += 1
-        if attempts < 3:
-            raise WebshareError("Webshare /file_link/ failed: File temporarily unavailable.")
-        return f"http://127.0.0.1:{httpd.server_address[1]}/f.mkv"
+        raise WebshareError("Webshare /file_link/ failed: File temporarily unavailable.")
 
-    monkeypatch.setattr(fake_webshare, "file_link", flaky_file_link)
-    monkeypatch.setattr(downloads_module, "TRANSIENT_LINK_RETRY_DELAYS", (0, 0), raising=False)
-    try:
-        nzb = build_nzb("temporary1", "Eventually.Available.mkv", len(payload))
-        nzo_id = client.post(
-            "/sabnzbd/api",
-            params={"mode": "addfile", "apikey": "testkey", "cat": "tv"},
-            files={"nzbfile": ("Show S01E01.nzb", nzb.encode(), "application/x-nzb")},
-        ).json()["nzo_ids"][0]
+    monkeypatch.setattr(fake_webshare, "file_link", dead_file_link)
+    nzb = build_nzb("temporary1", "Never.Available.mkv", 1000)
+    nzo_id = client.post(
+        "/sabnzbd/api",
+        params={"mode": "addfile", "apikey": "testkey", "cat": "tv"},
+        files={"nzbfile": ("Show S01E01.nzb", nzb.encode(), "application/x-nzb")},
+    ).json()["nzo_ids"][0]
 
-        manager = app.state.downloads
-        assert wait_for(lambda: manager.get(nzo_id).status == "completed")
-        assert attempts == 3
-        assert (Path(manager.get(nzo_id).storage) / "Eventually.Available.mkv").read_bytes() == payload
-    finally:
-        httpd.shutdown()
+    manager = app.state.downloads
+    assert wait_for(lambda: manager.get(nzo_id).status == "failed")
+    assert attempts == 1
+    assert "temporarily unavailable" in manager.get(nzo_id).error
 
 
 def test_ensure_dirs_creates_category_folders(tmp_path, monkeypatch):

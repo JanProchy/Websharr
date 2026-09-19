@@ -549,6 +549,36 @@ def test_audio_language_mapping():
     assert audio_language([]) == ""
 
 
+def test_pubdate_is_stable_per_file(client, fake_webshare):
+    """Sonarr matches a usenet blocklist entry on title + *exact* publish date.
+    A pubDate of "now" changed on every search, so a failed release was never
+    recognised as blocklisted and got re-grabbed forever (40x for one dead
+    Futurama file). The date must be the same each time for the same file."""
+    import email.utils
+    import time
+    fake_webshare.results = [
+        SearchResult("p1", "Skvrna 05 - Bestie 720p.mkv", 500_000_000),
+        SearchResult("p2", "Skvrna 05 - Bestie 1080p.mkv", 900_000_000),
+    ]
+    params = {"t": "tvsearch", "apikey": "testkey", "q": "Skvrna", "season": "1", "ep": "5"}
+
+    def dates():
+        root = ET.fromstring(client.get("/torznab/api", params=params).content)
+        return {i.findtext("guid"): i.findtext("pubDate") for i in root.findall("channel/item")}
+
+    first = dates()
+    real = time.time
+    try:
+        time.time = lambda: real() + 3600  # a later search
+        second = dates()
+    finally:
+        time.time = real
+    assert first == second
+    assert first["websharr-p1"] != first["websharr-p2"]
+    for d in first.values():
+        assert email.utils.parsedate_to_datetime(d).timestamp() < real()
+
+
 def test_nzb_download(client):
     resp = client.get("/torznab/nzb/id1", params={
         "apikey": "testkey", "name": "Zaklinac.S01E05.1080p.CZ.mkv", "size": "4000000000",

@@ -23,9 +23,6 @@ logger = logging.getLogger("websharr.downloads")
 
 CHUNK_SIZE = 1024 * 1024
 HISTORY_CAP = 500  # keep this many completed/failed records in the UI history
-# Webshare occasionally needs time to prepare a file. Keep the same SAB job
-# alive so Sonarr does not enter an immediate fail -> search -> grab loop.
-TRANSIENT_LINK_RETRY_DELAYS = (2, 5, 10, 20, 30, 60, 60, 60, 60, 60, 60, 60, 60)
 
 
 def _total_size(resp: httpx.Response, offset: int) -> int:
@@ -332,25 +329,10 @@ class DownloadManager:
             self.delete(job.nzo_id)
 
     async def _download(self, job: Job) -> None:
-        url: str | None = None
-        for attempt in range(len(TRANSIENT_LINK_RETRY_DELAYS) + 1):
-            try:
-                url = await self._client.file_link(job.ident)
-                job.error = ""
-                break
-            except WebshareError as exc:
-                transient = "temporarily unavailable" in str(exc).lower()
-                if not transient or attempt >= len(TRANSIENT_LINK_RETRY_DELAYS):
-                    raise
-                delay = TRANSIENT_LINK_RETRY_DELAYS[attempt]
-                job.error = f"Retrying temporary Webshare error in {delay}s: {exc}"
-                self._save_state()
-                logger.warning(
-                    "Temporary link error for %s; retrying same job in %ss (%d/%d)",
-                    job.nzo_id, delay, attempt + 1, len(TRANSIENT_LINK_RETRY_DELAYS),
-                )
-                await asyncio.sleep(delay)
-        assert url is not None
+        # No retry on a link error: Webshare's "File temporarily unavailable" does
+        # not recover in practice. Failing right away frees the slot and lets *arr
+        # blocklist the release (see torznab._pub_date) and grab another one.
+        url = await self._client.file_link(job.ident)
 
         work_dir = self._incomplete_path(job)
         work_dir.mkdir(parents=True, exist_ok=True)
