@@ -14,8 +14,12 @@ A bridge between **Webshare.cz** (premium account) and the ***arr stack** (Sonar
 ## Getting started
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
+
+This pulls the prebuilt image `ghcr.io/janprochy/websharr` (tags: `latest`,
+the version number, e.g. `0.3.11`). To build from source instead, uncomment
+`build: .` in `docker-compose.yml` and run `docker compose up -d --build`.
 
 Then open **`http://localhost:9797/ui`** and walk through the first-run setup:
 create your Websharr account and enter your Webshare.cz **premium** login
@@ -26,7 +30,10 @@ Environment variables (`.env`, all optional) can pre-fill the Webshare login
 and pin the API key — values saved in the UI take precedence and persist in
 `/config/settings.json`.
 
-In `docker-compose.yml`, adjust the `/downloads` volume so it points to the same folder that Sonarr/Radarr sees (otherwise set up a Remote Path Mapping).
+Set `DOWNLOADS_DIR` (in `.env`, or as a stack environment variable in Portainer)
+to the same host folder that Sonarr/Radarr see as their download directory
+(otherwise set up a Remote Path Mapping). `CONFIG_DIR` and `WEBSHARR_PORT` work
+the same way; see `.env.example` for the defaults.
 
 ## Web UI
 

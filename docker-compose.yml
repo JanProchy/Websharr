@@ -1,13 +1,15 @@
 services:
     websharr:
-        build: .
+        image: ghcr.io/janprochy/websharr:latest
+        # Uncomment to build from source instead of pulling the published image:
+        # build: .
         container_name: websharr
         restart: unless-stopped
         # Run as your host user so downloaded files are yours (movable/deletable),
         # same idea as PUID/PGID in the *arr containers.
         user: "${PUID:-1000}:${PGID:-1000}"
         ports:
-            - "9797:9797"
+            - "${WEBSHARR_PORT:-9797}:9797"
         environment:
             # All optional — the first-run wizard at http://localhost:9797/ui
             # handles the Webshare credentials and generates an API key.
@@ -20,5 +22,5 @@ services:
         volumes:
             # Must be the SAME host path that Sonarr/Radarr see as their download dir,
             # otherwise use Remote Path Mappings in *arr.
-            - /data/downloads/websharr:/downloads
-            - ./config:/config
+            - ${DOWNLOADS_DIR:-/data/downloads/websharr}:/downloads
+            - ${CONFIG_DIR:-./config}:/config
