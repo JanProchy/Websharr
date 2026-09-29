@@ -58,9 +58,10 @@ class FakeWebshareClient:
         return self.file_link_url
 
     async def file_info(self, ident: str) -> dict:
-        return self.file_infos.get(ident, {
-            "length": 3600, "width": 1920, "height": 1080, "format": "H264", "type": "mkv",
-        })
+        # Default: only a resolution. Duration/codec/audio drive the measured
+        # quality rules (torso, bitrate, codec/audio tokens), which tests opt in
+        # to by setting file_infos explicitly — the canned sizes here are tiny.
+        return self.file_infos.get(ident, {"width": 1920, "height": 1080, "type": "mkv"})
 
     async def close(self):
         pass

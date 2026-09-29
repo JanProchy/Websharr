@@ -57,6 +57,9 @@ class Config:
         self.search_limit = int(os.environ.get("SEARCH_LIMIT", "60"))
         # Seconds identical Webshare searches are answered from memory; 0 = off.
         self.search_cache_ttl = int(os.environ.get("SEARCH_CACHE_TTL", "600"))
+        # Websharr's own release-title tags (CZaudio, SKaudio, CZunverified,
+        # LowBitrate) for custom formats; off unless enabled here or in the UI.
+        self.release_tags = os.environ.get("RELEASE_TAGS", "").strip().lower() in ("1", "true", "yes", "on")
         self.log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
 
 

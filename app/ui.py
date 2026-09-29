@@ -186,6 +186,7 @@ async def ui_settings_get(request: Request):
         "notify_vip_days": settings.notify_vip_days,
         "categories": settings.categories,
         "theme": settings.theme,
+        "release_tags": settings.release_tags,
         "account": getattr(request.app.state, "account", None),
     }
 
@@ -277,6 +278,10 @@ async def ui_settings_post(request: Request):
             settings.notify_vip_days = max(0, int(body.get("notify_vip_days")))
         except (TypeError, ValueError):
             return JSONResponse({"error": "notify_vip_days must be a number"}, status_code=400)
+    if "release_tags" in body:
+        if not isinstance(body.get("release_tags"), bool):
+            return JSONResponse({"error": "release_tags must be true or false"}, status_code=400)
+        settings.release_tags = body.get("release_tags")
     if "theme" in body:
         theme = body.get("theme")
         if theme not in THEMES:

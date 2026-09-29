@@ -435,6 +435,8 @@
     .logline .lv { width: 54px; }
     .logtail { padding: 6px 0; }
     .logtail input[type="checkbox"] { width: 18px; height: 18px; }
+    .scheck { display: flex; align-items: center; gap: 8px; }
+    .scheck input[type="checkbox"] { width: 18px; height: 18px; }
   }
 
   /* settings — two columns: info left, form right; centered column */
@@ -887,6 +889,24 @@
 
     <div class="scard">
       <div class="sinfo">
+        <h3>Release tags</h3>
+        <p class="shint">Websharr measures every file and can add its own tags to the
+          release name: <b>CZaudio</b>/<b>SKaudio</b> (a tagged CZ/SK audio track),
+          <b>CZunverified</b> (named as a dub, but no CZ/SK track) and <b>LowBitrate</b>.
+          They only help with custom formats that score them — see the README.</p>
+      </div>
+      <div class="sform">
+        <label class="scheck"><input id="set-release-tags" type="checkbox"> Add Websharr release tags</label>
+        <div class="srow">
+          <div class="spacer"></div>
+          <button class="primary" id="set-tags-save">Save</button>
+        </div>
+        <span class="sresult" id="set-tags-result"></span>
+      </div>
+    </div>
+
+    <div class="scard">
+      <div class="sinfo">
         <h3>Search aliases</h3>
         <p class="shint">Manual override/supplement to the TMDB lookup. Map
           <b>*arr title → Webshare (Czech) title</b> and Websharr also searches the
@@ -1149,6 +1169,7 @@ const App = {
       $("set-categories").value = (s.categories || []).join(", ");
       $("set-notify-urls").value = (s.notify_urls || []).join("\n");
       $("set-vip-days").value = s.notify_vip_days ?? 7;
+      $("set-release-tags").checked = !!s.release_tags;
       this.renderVip(s.account);
       $("set-tmdb-token").value = "";
       $("set-tmdb-token").placeholder = s.tmdb_token_set
@@ -1806,6 +1827,12 @@ $("set-notify-save").onclick = async () => {
     });
     sresult("set-notify-result", true, "✓ Saved");
   } catch (e) { sresult("set-notify-result", false, e.message); }
+};
+$("set-tags-save").onclick = async () => {
+  try {
+    await uiPost("settings", { release_tags: $("set-release-tags").checked });
+    sresult("set-tags-result", true, "✓ Saved");
+  } catch (e) { sresult("set-tags-result", false, e.message); }
 };
 $("set-notify-test").onclick = async () => {
   sresult("set-notify-result", true, "Sending…");

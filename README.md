@@ -139,6 +139,58 @@ a short show's Czech name, a 20-minute special named like the feature, a
 5-minute excerpt. Extended cuts (up to 1.6×) and double episodes (up to 2.6×)
 still pass; files of unknown length are kept.
 
+## Measured quality
+
+Webshare's `file_info` is a media probe, so Websharr measures every shown file
+(cached, with a process-wide limit and retry — Webshare answers 403 to bursts)
+and writes what it measured into the release title, in tokens Sonarr/Radarr's
+parser and custom formats already understand:
+
+- **Resolution** — a `2160p`/`4K`/`UHD` claim that measures lower is replaced by
+  the real height (a 1080p inside a "4K" name).
+- **Codec** `x264`/`x265` and the **best audio track** (`DDP5.1`, `DD5.1`,
+  `DTS-HD MA 7.1`, `TrueHD 7.1`, `AAC2.0`…; the CZ/SK track when the file has
+  one) — only when the name carries none; the uploader's own tags win.
+- **`Upscaled`** for 2160p below ~30 MB/min (TRaSH's `Upscaled` custom format
+  already scores it).
+- The `language` attribute lists **every tagged audio language**
+  (`Czech, English` for a dual-audio file), and the `tmdbid`/`imdb`/`tvdbid` of
+  the search are echoed so a Czech-only file name still maps to the right title.
+- Stubs under 3 MB/min are dropped.
+
+HDR/DV, bit depth, subtitles and the source (WEB/BluRay) are not in the probe
+and are never invented.
+
+### Release tags (optional)
+
+With **Settings → Release tags** (or `RELEASE_TAGS=1`) Websharr adds its own
+tags too. They mean nothing to Sonarr/Radarr on their own — they are for custom
+formats you score in your profiles:
+
+| Tag | Meaning | Suggested score |
+|---|---|---|
+| `CZaudio` / `SKaudio` | an audio track is tagged Czech / Slovak — a verified dub | + (e.g. 500 / 300) |
+| `CZunverified` | the name claims a dub, but the tagged tracks don't show it (tags are sometimes rewritten, so not a hard reject) | − (e.g. −1000) |
+| `LowBitrate` | 1080p below 20 MB/min (x264) / 14 (HEVC), 720p below 12 / 8 — a starved encode | − (e.g. −500) |
+
+A custom format to import (Settings → Custom Formats → Import), one per tag:
+
+```json
+{
+  "name": "Websharr: CZ audio",
+  "includeCustomFormatWhenRenaming": false,
+  "specifications": [
+    {
+      "name": "CZaudio",
+      "implementation": "ReleaseTitleSpecification",
+      "negate": false,
+      "required": true,
+      "fields": { "value": "\\bCZaudio\\b" }
+    }
+  ]
+}
+```
+
 ## Monitoring and notifications
 
 - **Health check.** `GET /health` (no API key) returns `200` when the download
@@ -177,6 +229,7 @@ still pass; files of unknown length are kept.
 | `CATEGORIES` | `tv,movies` | SABnzbd categories offered to *arr, each with its own `COMPLETE_DIR/<cat>` folder (UI value wins) |
 | `SEARCH_LIMIT` | `60` | max results from Webshare per query |
 | `SEARCH_CACHE_TTL` | `600` | seconds an identical Webshare search is answered from memory; `0` disables |
+| `RELEASE_TAGS` | off | add Websharr's own release tags (`CZaudio`, `CZunverified`, `LowBitrate`…); also in Settings |
 
 Sonarr and Radarr repeat the same searches (per episode, per season, on retry),
 so Websharr answers an identical Webshare search from memory for

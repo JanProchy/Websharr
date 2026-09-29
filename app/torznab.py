@@ -94,9 +94,26 @@ def dub_language(name: str) -> str:
     return "Czech"
 
 
-# Audio-track language codes (Webshare file_info) that mean a CZ/SK release.
-_AUDIO_CZECH = {"CZE", "CES", "CS", "CZ"}
-_AUDIO_SLOVAK = {"SLO", "SLK", "SK"}
+# Audio-track language codes (Webshare file_info, ISO 639-2/1) -> *arr language names.
+_ISO_LANGS = {
+    "CZE": "Czech", "CES": "Czech", "CS": "Czech", "CZ": "Czech",
+    "SLO": "Slovak", "SLK": "Slovak", "SK": "Slovak",
+    "ENG": "English", "EN": "English", "GER": "German", "DEU": "German", "FRE": "French",
+    "FRA": "French", "SPA": "Spanish", "ITA": "Italian", "POL": "Polish", "HUN": "Hungarian",
+    "RUS": "Russian", "UKR": "Ukrainian", "JPN": "Japanese", "KOR": "Korean", "CHI": "Chinese",
+    "ZHO": "Chinese", "DAN": "Danish", "SWE": "Swedish", "NOR": "Norwegian", "FIN": "Finnish",
+    "DUT": "Dutch", "NLD": "Dutch", "POR": "Portuguese", "TUR": "Turkish",
+}
+
+
+def track_languages(codes) -> list[str]:
+    """*arr language names of the tagged audio tracks, CZ/SK first, no duplicates."""
+    out: list[str] = []
+    for code in codes or ():
+        name = _ISO_LANGS.get((code or "").strip().upper())
+        if name and name not in out:
+            out.append(name)
+    return sorted(out, key=lambda n: n not in ("Czech", "Slovak"))
 
 
 def audio_language(codes) -> str:
@@ -105,12 +122,8 @@ def audio_language(codes) -> str:
     Only a positive signal: track tags are often missing or wrong, so their
     absence never overrides a marker in the file name.
     """
-    codes = {(c or "").strip().upper() for c in codes or ()}
-    if codes & _AUDIO_CZECH:
-        return "Czech"
-    if codes & _AUDIO_SLOVAK:
-        return "Slovak"
-    return ""
+    langs = track_languages(codes)
+    return "Czech" if "Czech" in langs else "Slovak" if "Slovak" in langs else ""
 
 
 def _xml_response(element: ET.Element, status_code: int = 200) -> Response:
@@ -301,7 +314,7 @@ async def _file_info(client, ident: str) -> dict:
 
 
 async def _probe(client, results: list[SearchResult], all_files: bool = False
-                 ) -> tuple[dict[str, int], dict[str, str], dict[str, int]]:
+                 ) -> tuple[dict[str, int], dict[str, str], dict[str, int], dict[str, dict]]:
     """Fetch file_info for results whose *name* leaves something open, and
     return (heights, audio, lengths): the video height for names without a
     resolution token — many CZ files ship without one and Sonarr/Radarr reject
@@ -312,7 +325,7 @@ async def _probe(client, results: list[SearchResult], all_files: bool = False
     need = results if all_files else \
         [r for r in results if not _RES_RE.search(r.name) or not dub_language(r.name)]
     if not need:
-        return {}, {}, {}
+        return {}, {}, {}, {}
 
     async def one(r: SearchResult):
         return r, await _file_info(client, r.ident)
@@ -320,7 +333,10 @@ async def _probe(client, results: list[SearchResult], all_files: bool = False
     heights: dict[str, int] = {}
     audio: dict[str, str] = {}
     lengths: dict[str, int] = {}
+    infos: dict[str, dict] = {}
     for r, info in await asyncio.gather(*(one(r) for r in need)):
+        if info:
+            infos[r.ident] = info
         if int(info.get("length") or 0) > 0:
             lengths[r.ident] = int(info["length"])
         height = resolution_class(int(info.get("width") or 0), int(info.get("height") or 0))
@@ -329,7 +345,7 @@ async def _probe(client, results: list[SearchResult], all_files: bool = False
         lang = audio_language(info.get("audio_languages"))
         if lang and not dub_language(r.name):
             audio[r.ident] = lang
-    return heights, audio, lengths
+    return heights, audio, lengths, infos
 
 
 # How far a file's duration may stray from the TMDB runtime, as (min, max)
@@ -486,6 +502,121 @@ def junk_reason(name: str, movie: bool = False) -> str:
     return ""
 
 
+# --- measured quality -------------------------------------------------------
+# Webshare's file_info is a media probe: resolution, video codec, duration,
+# overall bitrate and every audio track (codec, channels, language) are real.
+# It does NOT know HDR/DV, bit depth, subtitles or the source (WEB/BluRay), so
+# those are never invented. What is measured goes into the release title as
+# tokens *arr's parser and custom formats already understand.
+
+# Below this a file is a stub, not a watchable encode (HARAKIRI.mp4: 10 MB / 135 min).
+_TORSO_MB_PER_MIN = 3
+# Bitrate floors (MB/min) under which an encode is visibly starved — x264 / HEVC
+# (HEVC needs ~0.7x for the same picture). Scene 1080p x264 runs 40–100.
+_LOW_BITRATE = {1080: (20, 14), 720: (12, 8)}
+# A real UHD encode is >= ~30 MB/min; "2160p" below that is an upscale.
+_UHD_FLOOR = 30
+
+_HAS_CODEC_RE = re.compile(r"\b(x ?26[45]|h ?\.?26[45]|hevc|avc|xvid|divx|av1|vc-?1|mpeg-?[24])\b", re.I)
+_HAS_AUDIO_RE = re.compile(
+    r"(\bdd\+|\bddp|\be-?ac-?3|\bac-?3|\baac|\bdts|\btruehd|\batmos|\bflac|\bmp3|\bopus|\bl?pcm)", re.I)
+_UHD_CLAIM_RE = re.compile(r"\b(2160p?|4k|uhd)\b", re.I)
+_HEVC_FORMATS = {"HEVC", "H265", "H.265"}
+_AVC_FORMATS = {"H264", "AVC", "H.264"}
+_CHANNELS = {8: "7.1", 7: "6.1", 6: "5.1", 3: "2.1", 2: "2.0", 1: "1.0"}
+# Audio codec preference, best first (DTS with 8 channels is DTS-HD MA / DTS:X —
+# the lossy DTS core tops out at 6).
+_AUDIO_RANK = {"TRUEHD": 6, "DTSHD": 5, "FLAC": 5, "EAC3": 4, "DTS": 3, "AC3": 2, "AAC": 1, "MP3": 0}
+
+
+def _mb_per_min(size: int, length_s: int) -> float:
+    return size / 1048576 / (length_s / 60) if size and length_s else 0.0
+
+
+def is_torso(size: int, length_s: int) -> bool:
+    """A few MB per minute: a stub/broken upload, not a watchable encode."""
+    mbmin = _mb_per_min(size, length_s)
+    return bool(mbmin) and mbmin < _TORSO_MB_PER_MIN
+
+
+def audio_token(info: dict, prefer: tuple[str, ...] = ()) -> str:
+    """Release-title token for the best audio track ("DDP5.1", "DTS-HD MA 7.1",
+    "TrueHD 7.1", "AAC2.0"…), taken from the tracks in the preferred languages
+    (e.g. the Czech dub) when there are any. "" when nothing is known."""
+    tracks = info.get("audio") or []
+    pool = [t for t in tracks if _ISO_LANGS.get(t.get("language", "")) in prefer] or tracks
+    best, best_key = None, (-1, -1)
+    for t in pool:
+        fmt, ch = t.get("format", ""), int(t.get("channels") or 0)
+        kind = "DTSHD" if fmt.startswith("DTS") and ch >= 8 else ("DTS" if fmt.startswith("DTS") else fmt)
+        key = (_AUDIO_RANK.get(kind, -1), ch)
+        if key > best_key:
+            best, best_key = (kind, ch), key
+    if not best or best_key[0] < 0:
+        return ""
+    kind, ch = best
+    chs = _CHANNELS.get(ch, "")
+    return {
+        "TRUEHD": f"TrueHD {chs}", "DTSHD": f"DTS-HD MA {chs}", "DTS": f"DTS {chs}",
+        "FLAC": f"FLAC {chs}", "EAC3": f"DDP{chs}", "AC3": f"DD{chs}", "AAC": f"AAC{chs}",
+        "MP3": "MP3",
+    }[kind].strip()
+
+
+def quality_tokens(name: str, size: int, info: dict, *, czech: bool = False,
+                   tags: bool = False) -> tuple[str, list[str]]:
+    """(name with a corrected resolution, extra tokens) from the measured file.
+
+    - a "2160p/4K/UHD" claim that measures lower is replaced by the real height
+      (a 1080p inside a "4K" name — the upscale trap)
+    - codec (x264/x265, never a bare "HEVC"/"AVC": with "BluRay" those read as
+      BR-DISK) and the best audio track, only when the name carries none — the
+      uploader's own tags (Atmos, DTS-HD, HDR…) stay authoritative
+    - "Upscaled" for 2160p below a real UHD bitrate (a TRaSH custom format
+      already blocks it)
+
+    With `tags` (the "Release tags" setting), also Websharr's own tokens, which
+    only mean something to custom formats made for them (see the README):
+    - "LowBitrate" for a starved 720p/1080p encode — to score, not a hard
+      reject: an old CZ dub may have nothing better
+    - "CZaudio"/"SKaudio" when a track is tagged Czech/Slovak (a verified dub,
+      not just a name claim), "CZunverified" when the name claims a dub the
+      tagged tracks don't show
+    """
+    if not info:
+        return name, []
+    tokens: list[str] = []
+    measured = resolution_class(int(info.get("width") or 0), int(info.get("height") or 0))
+    if measured and measured < 2160 and _UHD_CLAIM_RE.search(name):
+        name = _UHD_CLAIM_RE.sub(f"{measured}p", name)
+    fmt = (info.get("format") or "").upper()
+    if not _HAS_CODEC_RE.search(name):
+        if fmt in _HEVC_FORMATS:
+            tokens.append("x265")
+        elif fmt in _AVC_FORMATS:
+            tokens.append("x264")
+    if not _HAS_AUDIO_RE.search(name):
+        tok = audio_token(info, ("Czech", "Slovak") if czech else ())
+        if tok:
+            tokens.append(tok)
+    mbmin = _mb_per_min(size, int(info.get("length") or 0))
+    klass = measured or next((int(m) for m in _RES_RE.findall(name)), 0)
+    if mbmin and klass >= 2160 and mbmin < _UHD_FLOOR:
+        tokens.append("Upscaled")
+    elif tags and mbmin and klass in _LOW_BITRATE:
+        floor = _LOW_BITRATE[klass][1 if fmt in _HEVC_FORMATS else 0]
+        if mbmin < floor:
+            tokens.append("LowBitrate")
+    langs = track_languages(info.get("audio_languages")) if tags else []
+    if "Czech" in langs:
+        tokens.append("CZaudio")
+    elif "Slovak" in langs:
+        tokens.append("SKaudio")
+    elif langs and dub_language(name):
+        tokens.append("CZunverified")  # named as a dub, the tagged tracks say otherwise
+    return name, tokens
+
+
 def year_conflict(name: str, year: int) -> bool:
     """True when every year token in the file name contradicts the title's year.
 
@@ -629,8 +760,11 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
                  *, query: str | None = None, season: str | None = None,
                  ep: str | None = None, episodes: dict[str, int] | None = None,
                  heights: dict[str, int] | None = None, audio: dict[str, str] | None = None,
-                 language: str = "", czech_titles: list[str] | None = None) -> Response:
+                 language: str = "", czech_titles: list[str] | None = None,
+                 infos: dict[str, dict] | None = None, ids: dict | None = None) -> Response:
     heights = heights or {}
+    infos = infos or {}
+    ids = {k: v for k, v in (ids or {}).items() if v}
     audio = audio or {}
     episodes = episodes or {}
     ET.register_namespace("torznab", TORZNAB_NS)
@@ -655,11 +789,23 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
         # by being named after the Czech title ("Cerveny trpaslik ...") — gets the
         # marker added, so title-based custom formats ("CZ" in release title)
         # see it too.
-        inferred = "" if dub_language(r.name) else audio.get(r.ident) or \
-            ("Czech" if czech_titles and matches_query(czech_titles, r.name) else "")
+        info = infos.get(r.ident, {})
+        tagged = track_languages(info.get("audio_languages"))
+        # A Czech-title match is only a hint: when the tracks are tagged and none
+        # of them is CZ/SK, the file is not a dub (an English file named in Czech).
+        by_title = "Czech" if czech_titles and matches_query(czech_titles, r.name) and \
+            (not tagged or {"Czech", "Slovak"} & set(tagged)) else ""
+        inferred = "" if dub_language(r.name) else audio.get(r.ident) or by_title
         marker, marker_re = ("SK", _SK_RE) if inferred == "Slovak" else ("CZ", _CZ_RE)
         if inferred and not marker_re.search(title):
             title = f"{title} {marker}"
+        # The audio token describes the CZ/SK track whenever the file has one
+        # (tagged or claimed): that's the track a CZ profile cares about.
+        title, extra = quality_tokens(title, r.size, info, czech=bool(
+            dub_language(r.name) or inferred or {"Czech", "Slovak"} & set(tagged)),
+            tags=settings.release_tags)
+        if extra:
+            title = f"{title} {' '.join(extra)}"
         ET.SubElement(item, "title").text = title
         ET.SubElement(item, "guid", {"isPermaLink": "false"}).text = f"websharr-{r.ident}"
         # The saved file keeps the raw filename; the folder/title (nzbname) carries
@@ -684,7 +830,14 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
         # policy grabs the original audio and skips the dub. A file named after
         # the Czech dub title ("Kačeří příběhy ...") is a Czech release even
         # when it carries no "dabing" marker.
-        item_lang = dub_language(r.name) or inferred or language
+        claimed = dub_language(r.name) or inferred
+        if tagged:
+            # every tagged track language; a name-claimed dub the tags don't show
+            # stays in (tags are often missing or rewritten) — "CZunverified" marks it
+            item_langs = ([claimed] if claimed and claimed not in tagged else []) + tagged
+        else:
+            item_langs = [claimed or language] if (claimed or language) else []
+        item_lang = ", ".join(item_langs)
         # Emit attrs in both namespaces so the feed parses whether Sonarr/Radarr
         # treats it as Newznab (usenet — the correct choice) or Torznab.
         for ns in (NEWZNAB_NS, TORZNAB_NS):
@@ -695,6 +848,11 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
             if item_lang:
                 ET.SubElement(item, "{%s}attr" % ns,
                               {"name": "language", "value": item_lang})
+            # Echo the ids the search came with: *arr maps a Czech-only file name
+            # to the right movie/series by id even when the title doesn't parse.
+            for key, attr in (("tmdbid", "tmdbid"), ("imdbid", "imdb"), ("tvdbid", "tvdbid")):
+                if ids.get(key):
+                    ET.SubElement(item, "{%s}attr" % ns, {"name": attr, "value": str(ids[key])})
 
     return _xml_response(rss)
 
@@ -795,7 +953,10 @@ async def torznab_api(request: Request):
     # Check a few more than asked for, so dropped files don't leave *arr with
     # fewer results than the limit when more good ones exist.
     shown = merged[:limit * 2] if minutes else merged[:limit]
-    heights, audio, lengths = await _probe(client, shown, all_files=bool(minutes))
+    # file_info is cheap and cached: probe every shown file, the measured
+    # resolution/codec/audio feed the release title and language attrs.
+    heights, audio, lengths, infos = await _probe(client, shown, all_files=True)
+    shown = [r for r in shown if not is_torso(r.size, lengths.get(r.ident, 0))]
     if minutes:
         kept = []
         for r in shown:
@@ -807,7 +968,8 @@ async def torznab_api(request: Request):
         shown = kept[:limit]
     return _render_feed(request, shown, category, heights=heights, audio=audio,
                         query=display, season=(season if t == "tvsearch" else None), ep=ep,
-                        episodes=episodes, language=language, czech_titles=czech_titles)
+                        episodes=episodes, language=language, czech_titles=czech_titles,
+                        infos=infos, ids={k: params.get(k) for k in ("tmdbid", "imdbid", "tvdbid")})
 
 
 @router.get("/torznab/nzb/{ident}")

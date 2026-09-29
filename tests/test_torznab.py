@@ -594,9 +594,11 @@ def test_feed_download_url_is_ascii(client, fake_webshare):
     assert "%C4%9B" not in url and "vedomi" in url  # transliterated, not encoded
 
 
-def test_search_labels_quality_from_fileinfo(client, fake_webshare):
+def test_search_labels_quality_from_fileinfo(client, fake_webshare, monkeypatch):
     """A CZ file with no resolution in its name gets one appended from
     file_info's height, so *arr can detect the quality."""
+    from app.settings import settings
+    monkeypatch.setattr(settings, "release_tags", True)
     fake_webshare.results = [SearchResult("q1", "Skvrna 05 - Bestie.mp4", 500_000_000)]
     fake_webshare.file_infos = {"q1": {"length": 2600, "width": 1920, "height": 1080,
                                        "format": "H264", "type": "mp4"}}
@@ -604,7 +606,8 @@ def test_search_labels_quality_from_fileinfo(client, fake_webshare):
         "t": "tvsearch", "apikey": "testkey", "q": "Skvrna", "season": "1", "ep": "5",
     })
     title = ET.fromstring(resp.content).findtext("channel/item/title")
-    assert title == "Skvrna S01E05 - Skvrna 05 - Bestie 1080p"
+    # 500 MB over 43 min is a starved 1080p x264 encode
+    assert title == "Skvrna S01E05 - Skvrna 05 - Bestie 1080p x264 LowBitrate"
 
 
 def test_resolution_class():
@@ -711,11 +714,13 @@ def test_audio_track_language_tags_czech_dub_without_name_marker(client, fake_we
     for it in ET.fromstring(resp.content).findall("channel/item"):
         attrs = {a.get("name"): a.get("value") for a in it.findall(f"{NZNS}attr")}
         got[it.findtext("guid")] = (it.findtext("title"), attrs.get("language"))
+    # (the measured codec is appended; the "2160p" claim measured 1080 is corrected)
     assert got["websharr-dub"] == (
-        "Futurama S08E02 - Futurama Bahnem zapomenute deti 1080p WEB-DL prima+ CZ", "Czech")
+        "Futurama S08E02 - Futurama Bahnem zapomenute deti 1080p WEB-DL prima+ CZ x264", "Czech")
+    # the language attr lists what the tracks say
     assert got["websharr-eng"] == (
-        "Futurama S08E02 - Futurama - Bahnem zapomenute deti 2160p", None)
-    assert got["websharr-subs"] == ("Futurama S08E02 - Futurama 1080p CZ titulky", None)
+        "Futurama S08E02 - Futurama - Bahnem zapomenute deti 1080p x264", "English")
+    assert got["websharr-subs"] == ("Futurama S08E02 - Futurama 1080p CZ titulky x264", "English")
 
 
 def test_audio_language_mapping():
@@ -901,3 +906,99 @@ def test_runtime_check_off_without_known_runtime(client, fake_webshare, monkeypa
         "t": "movie", "apikey": "testkey", "tmdbid": "862", "cat": "2000"})
     root = ET.fromstring(resp.content)
     assert len(root.findall("channel/item")) == 1
+
+
+def _info(**kw):
+    """A file_info record; `audio_languages` follows the tracks, as Webshare reports it."""
+    base = {"length": 6000, "width": 1920, "height": 1080, "format": "H264", "audio": []}
+    base.update(kw)
+    base.setdefault("audio_languages", [a["language"] for a in base["audio"] if a.get("language")])
+    return base
+
+
+def test_audio_token_prefers_dub_track_and_best_codec():
+    from app.torznab import audio_token
+    tracks = [{"format": "TRUEHD", "channels": 8, "language": "ENG"},
+              {"format": "EAC3", "channels": 6, "language": "CZE"},
+              {"format": "AC3", "channels": 6, "language": "SLO"}]
+    assert audio_token({"audio": tracks}) == "TrueHD 7.1"
+    assert audio_token({"audio": tracks}, ("Czech", "Slovak")) == "DDP5.1"
+    assert audio_token({"audio": [{"format": "DTS", "channels": 8, "language": ""}]}) == "DTS-HD MA 7.1"
+    assert audio_token({"audio": [{"format": "DTS", "channels": 6, "language": ""}]}) == "DTS 5.1"
+    assert audio_token({"audio": [{"format": "AAC", "channels": 2, "language": "CZE"}]}) == "AAC2.0"
+    assert audio_token({"audio": []}) == ""
+
+
+def test_quality_tokens():
+    from app.torznab import quality_tokens
+    gb = 1024 ** 3
+    # "4K" name, 1080p inside: the claim is corrected
+    name, tok = quality_tokens("Film 2020 4K CZ", 8 * gb, _info(format="HEVC"))
+    assert name == "Film 2020 1080p CZ" and "x265" in tok
+    # real 2160p but a 1080p-sized bitrate: an upscale
+    _, tok = quality_tokens("Kaceri pribehy 2160p", 2 * gb, _info(width=3840, height=2160, format="HEVC"))
+    assert "Upscaled" in tok
+    # starved 1080p: x264 floor 20, HEVC floor 14 MB/min (6000 s = 100 min)
+    assert "LowBitrate" in quality_tokens("A 1080p", int(1.5 * gb), _info(), tags=True)[1]
+    assert "LowBitrate" not in quality_tokens("A 1080p", int(1.5 * gb), _info(format="HEVC"), tags=True)[1]
+    # uploader's own codec/audio tags win; nothing is added over them
+    _, tok = quality_tokens("A 1080p BluRay x264 DTS-HD MA 7.1", 10 * gb,
+                            _info(audio=[{"format": "AC3", "channels": 6, "language": "ENG"}]))
+    assert tok == []
+    # verified dub vs a name claim the tagged tracks deny
+    cz = [{"format": "AC3", "channels": 6, "language": "CZE"}]
+    en = [{"format": "AC3", "channels": 6, "language": "ENG"}]
+    assert "CZaudio" in quality_tokens("A CZ dabing 1080p", 8 * gb, _info(audio=cz), czech=True, tags=True)[1]
+    assert "CZunverified" in quality_tokens("A CZ dabing 1080p", 8 * gb, _info(audio=en), czech=True,
+                                            tags=True)[1]
+    # Websharr's own tags stay out unless enabled; the standard ones don't
+    _, tok = quality_tokens("A CZ dabing 1080p", int(1.5 * gb), _info(audio=cz), czech=True)
+    assert tok == ["x264", "DD5.1"]
+    # never a bare HEVC/AVC token (with BluRay it reads as BR-DISK)
+    assert quality_tokens("A 1080p BluRay", 8 * gb, _info(format="HEVC"))[1][0] == "x265"
+    assert quality_tokens("A", 1, {}) == ("A", [])
+
+
+def test_feed_languages_torso_and_ids(client, fake_webshare, monkeypatch):
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "release_tags", True)
+    monkeypatch.setattr(settings, "tmdb_token", "")
+    gb = 1024 ** 3
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("multi", "Hleda se Nemo 2003 1080p.mkv", 8 * gb),
+        SearchResult("stub", "Hleda se Nemo 2003 CZ.mp4", 10 * 1024 ** 2),
+    ]
+    fake_webshare.file_infos = {
+        "multi": _info(audio=[{"format": "EAC3", "channels": 6, "language": "CZE"},
+                              {"format": "TRUEHD", "channels": 8, "language": "ENG"}]),
+        "stub": _info(length=8000),  # 10 MB for 133 min: a torso
+    }
+    resp = client.get("/torznab/api", params={
+        "t": "movie", "apikey": "testkey", "q": "Hleda se Nemo", "tmdbid": "12", "imdbid": "0266543"})
+    items = ET.fromstring(resp.content).findall("channel/item")
+    assert len(items) == 1
+    attrs = {a.get("name"): a.get("value") for a in items[0].findall(f"{NZNS}attr")}
+    assert attrs["language"] == "Czech, English"
+    assert attrs["tmdbid"] == "12" and attrs["imdb"] == "0266543"
+    title = items[0].findtext("title")
+    assert "DDP5.1" in title and "CZaudio" in title and "x264" in title
+
+
+def test_czech_title_match_is_not_a_dub_when_tracks_say_otherwise(client, fake_webshare, monkeypatch):
+    """Named after the Czech title, but the only tagged track is English: not a dub."""
+    from app import torznab
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "tok")
+    _patch_tmdb(monkeypatch, torznab, ("Red Dwarf", "", "en", ("Cerveny trpaslik",), 1988), 0)
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [SearchResult("x", "Cerveny trpaslik S01E01 1080p.mkv", 900_000_000)]
+    fake_webshare.file_infos = {"x": _info(length=1800, audio=[{"format": "AC3", "channels": 2,
+                                                                "language": "ENG"}])}
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "tvdbid": "71326", "season": "1", "ep": "1"})
+    item = ET.fromstring(resp.content).find("channel/item")
+    attrs = {a.get("name"): a.get("value") for a in item.findall(f"{NZNS}attr")}
+    assert attrs["language"] == "English" and " CZ" not in item.findtext("title")

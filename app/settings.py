@@ -69,6 +69,8 @@ class Settings:
         # initial default, editable in the UI.
         self.categories: list[str] = list(config.categories)
         self.theme: str = DEFAULT_THEME
+        # Websharr's own release-title tags for custom formats (see README).
+        self.release_tags: bool = config.release_tags
 
     @property
     def configured(self) -> bool:
@@ -113,6 +115,8 @@ class Settings:
             self.categories = list(config.categories)
         theme = data.get("theme", DEFAULT_THEME)
         self.theme = theme if theme in THEMES else DEFAULT_THEME
+        tags = data.get("release_tags")
+        self.release_tags = tags if isinstance(tags, bool) else config.release_tags
 
     def save(self) -> None:
         path = config.settings_file
@@ -133,6 +137,7 @@ class Settings:
             "notify_vip_days": self.notify_vip_days,
             "categories": self.categories,
             "theme": self.theme,
+            "release_tags": self.release_tags,
         }
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         path.chmod(0o600)
