@@ -146,8 +146,9 @@ Webshare's `file_info` is a media probe, so Websharr measures every shown file
 and writes what it measured into the release title, in tokens Sonarr/Radarr's
 parser and custom formats already understand:
 
-- **Resolution** — a `2160p`/`4K`/`UHD` claim that measures lower is replaced by
-  the real height (a 1080p inside a "4K" name).
+- **Resolution** — a claim that measures lower (`4K`/`UHD`/`2160p`, or a `1080p`
+  with 720p inside) is replaced by the real height; 4:3 (1440×1080) and cropped
+  widescreen (1920×800) still count as 1080p.
 - **Codec** `x264`/`x265` and the **best audio track** (`DDP5.1`, `DD5.1`,
   `DTS-HD MA 7.1`, `TrueHD 7.1`, `AAC2.0`…; the CZ/SK track when the file has
   one) — only when the name carries none; the uploader's own tags win.

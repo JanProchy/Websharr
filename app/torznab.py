@@ -567,8 +567,9 @@ def quality_tokens(name: str, size: int, info: dict, *, czech: bool = False,
                    tags: bool = False) -> tuple[str, list[str]]:
     """(name with a corrected resolution, extra tokens) from the measured file.
 
-    - a "2160p/4K/UHD" claim that measures lower is replaced by the real height
-      (a 1080p inside a "4K" name — the upscale trap)
+    - a resolution claim ("4K"/"UHD"/"2160p"/"1080p"…) that measures lower is
+      replaced by the real height (a 1080p inside a "4K" name, a 720p inside a
+      "1080p" one); an understated name is left alone
     - codec (x264/x265, never a bare "HEVC"/"AVC": with "BluRay" those read as
       BR-DISK) and the best audio track, only when the name carries none — the
       uploader's own tags (Atmos, DTS-HD, HDR…) stay authoritative
@@ -587,8 +588,12 @@ def quality_tokens(name: str, size: int, info: dict, *, czech: bool = False,
         return name, []
     tokens: list[str] = []
     measured = resolution_class(int(info.get("width") or 0), int(info.get("height") or 0))
-    if measured and measured < 2160 and _UHD_CLAIM_RE.search(name):
-        name = _UHD_CLAIM_RE.sub(f"{measured}p", name)
+    if measured:
+        claims = [2160 for _ in _UHD_CLAIM_RE.findall(name)] + [int(r) for r in _RES_RE.findall(name)]
+        if claims and max(claims) > measured:
+            # the name overstates the picture ("4K"/"1080p" with 720p inside): say what it is
+            name = _UHD_CLAIM_RE.sub(f"{measured}p", name)
+            name = _RES_RE.sub(lambda m: f"{measured}p" if int(m.group(1)) > measured else m.group(0), name)
     fmt = (info.get("format") or "").upper()
     if not _HAS_CODEC_RE.search(name):
         if fmt in _HEVC_FORMATS:

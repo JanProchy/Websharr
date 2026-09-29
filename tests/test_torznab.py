@@ -935,6 +935,14 @@ def test_quality_tokens():
     # "4K" name, 1080p inside: the claim is corrected
     name, tok = quality_tokens("Film 2020 4K CZ", 8 * gb, _info(format="HEVC"))
     assert name == "Film 2020 1080p CZ" and "x265" in tok
+    # any overstated resolution is corrected, not only 4K (a "1080p" that is 720p inside)
+    assert quality_tokens("Film 2020 1080p CZ", 4 * gb, _info(width=1280, height=720))[0] == \
+        "Film 2020 720p CZ"
+    # 4:3 1440x1080 and cropped 1920x800 are still 1080p, not an overstatement
+    assert quality_tokens("Film 1943 1080p", 6 * gb, _info(width=1440, height=1080))[0] == "Film 1943 1080p"
+    assert quality_tokens("Film 2020 1080p", 6 * gb, _info(width=1920, height=800))[0] == "Film 2020 1080p"
+    # an understated name is left alone (the uploader may have re-encoded it down)
+    assert quality_tokens("Film 2020 720p", 6 * gb, _info())[0] == "Film 2020 720p"
     # real 2160p but a 1080p-sized bitrate: an upscale
     _, tok = quality_tokens("Kaceri pribehy 2160p", 2 * gb, _info(width=3840, height=2160, format="HEVC"))
     assert "Upscaled" in tok
