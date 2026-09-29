@@ -315,6 +315,21 @@ def test_file_marker_bare_number_must_follow_title():
     assert file_marker("Krtek", "Krtek - 07 - Krtek a paraplicko.avi") == (None, 7)
 
 
+def test_file_marker_rejects_other_show_before_marker():
+    from app.torznab import file_marker
+    titles = ["Bluey", "Blue"]  # TMDB gave the Czech title "Blue"
+    assert file_marker(titles, "Blue Planet II S01E01 One Ocean 1080p.mkv") == (None, None)
+    assert file_marker(titles, "Blue Thunder S01E01 Second Thunder 1080p BluRay.mkv") == (None, None)
+    assert file_marker(titles, "Blue.Lights.S01E01.PL.1080p.WEB-DL.mkv") == (None, None)
+    assert file_marker(titles, "Bluey S01E01 Magic Xylophone 1080p CZ.mkv") == (1, 1)
+    # season/language words, a year and the other names of the show are fine
+    assert file_marker("Zaklinac", "Zaklinac serie dabing S02E03.mkv") == (2, 3)
+    assert file_marker(["DuckTales", "Kaceri pribehy"], "Kaceri pribehy 2017 S01E02 CZ.mkv") == (1, 2)
+    assert file_marker(["The Sleepers", "Bez vedomi"], "Bez.vedomi.S01E01.2019.CZ.mkv") == (1, 1)
+    assert file_marker("House of the Dragon", "House.of.the.Dragon.S01E05.mkv") == (1, 5)
+    assert file_marker("Skvrna", "Skvrna CZ dabing S01E05 1080p.mkv") == (1, 5)
+
+
 def test_search_drops_other_season_with_same_episode(client, fake_webshare, monkeypatch):
     """A "DuckTales S01E02" search must not return "DuckTales.S02E02..." — the
     episode number matches but the season does not (the real-life mis-grab:
