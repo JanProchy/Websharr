@@ -642,6 +642,61 @@ def quality_tokens(name: str, size: int, info: dict, *, czech: bool = False,
     return name, tokens
 
 
+# --- movie release titles Radarr can map by title --------------------------
+# Words that may follow a movie title in a CZ upload without meaning another
+# film: language/tech tags and the genre list uploaders like to append.
+_MOVIE_TAIL_WORDS = frozenset("""
+cz sk en eng cze czech slovak cesky slovensky dab dabing dabovano dub dubbed titulky tit sub subs
+multi multidub dual audio hd fhd uhd full web webdl webrip dl bluray bdrip brrip hdtv tvrip dvdrip
+remux hevc avc aac ac3 eac3 dts dd ddp atmos truehd hdr dv mkv avi mp4 film movie verze version
+extended edition directors cut remastered kolekce collection
+animovany animovana komedie rodinny rodinna dobrodruzny akcni fantasy sci fi drama horor thriller
+krimi western pohadka muzikal romanticky valecny historicky dokument dokumentarni mysteriozni
+""".split())
+_SEQUEL_RE = re.compile(r"^(?:[2-9]|ii|iii|iv|vi|vii|viii|vol|volume|chapter|part|cast|dil|kapitola)$")
+
+
+def movie_title_prefix(display: str, year: int, titles, name: str) -> str:
+    """"<TMDB title> <year> - " to put in front of a movie release title, or "".
+
+    Radarr maps a release by its title; a Czech-only name ("Asterix a Obelix I.",
+    "Hotel.Transylvania.1(2012)", "Coco.mkv") doesn't parse, and a release it
+    could only map by the echoed tmdbid/imdb is **blocked from automatic import**
+    ("matched to movie by ID, Manual Import required"). The canonical title and
+    year in front let Radarr map and import it by itself.
+
+    Nothing is added when the name already starts with "<title> <year>", when the
+    title's year is unknown, or when what follows the matched title hints at
+    another film: a sequel marker (2, II, Vol., část…) or two or more words that
+    are neither tags, genres nor the film's other names (e.g. a cast list) — those
+    stay for Radarr's own parser and, at worst, a manual import.
+    """
+    if not display or not year:
+        return ""
+    stem = name.rsplit(".", 1)[0] if _is_video(name) else name
+    ntoks = normalize_text(stem).split()
+    dtoks = normalize_text(display).split()
+    if ntoks[:len(dtoks)] == dtoks and ntoks[len(dtoks):len(dtoks) + 1] == [str(year)]:
+        return ""
+    known = sorted({tuple(normalize_text(t).split()) for t in _as_titles(titles) if t} | {tuple(dtoks)},
+                   key=len, reverse=True)
+    rest = next((ntoks[len(k):] for k in known if k and tuple(ntoks[:len(k)]) == k), None)
+    if rest is None:
+        return ""
+    text = " " + " ".join(rest) + " "
+    for k in known:  # "When Marnie Was There - Leto s Marnie": two names of one film
+        if k:
+            text = text.replace(" " + " ".join(k) + " ", " ")
+    rest = [t for t in text.split() if len(t) > 1 or t.isdigit()]
+    audio = len(rest) > 1 and rest[0] in ("2", "5", "7") and rest[1] in ("0", "1")  # "5.1"
+    if rest and _SEQUEL_RE.match(rest[0]) and not audio:
+        return ""
+    foreign = [t for t in rest if t.isalpha() and t not in _MOVIE_TAIL_WORDS]
+    if len(foreign) >= 2:
+        return ""
+    return f"{display} {year} - "
+
+
 def year_conflict(name: str, year: int) -> bool:
     """True when every year token in the file name contradicts the title's year.
 
@@ -786,7 +841,8 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
                  ep: str | None = None, episodes: dict[str, int] | None = None,
                  heights: dict[str, int] | None = None, audio: dict[str, str] | None = None,
                  language: str = "", czech_titles: list[str] | None = None,
-                 infos: dict[str, dict] | None = None, ids: dict | None = None) -> Response:
+                 infos: dict[str, dict] | None = None, ids: dict | None = None,
+                 titles: list[str] | None = None, year: int = 0) -> Response:
     heights = heights or {}
     infos = infos or {}
     ids = {k: v for k, v in (ids or {}).items() if v}
@@ -806,6 +862,10 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
         title = release_title(query, season, episodes.get(r.ident, ep), r.name) \
             if query is not None else \
             (r.name.rsplit(".", 1)[0] if "." in r.name else r.name)
+        if category == CAT_MOVIES and query:
+            prefix = movie_title_prefix(query, year, titles or [], r.name)
+            if prefix:
+                title = f"{_asciify(prefix).strip()} {title}"
         # Label quality from the real video height when the name lacks one,
         # so *arr doesn't reject the release as "Unknown" quality.
         if not _RES_RE.search(title) and heights.get(r.ident):
@@ -994,7 +1054,8 @@ async def torznab_api(request: Request):
     return _render_feed(request, shown, category, heights=heights, audio=audio,
                         query=display, season=(season if t == "tvsearch" else None), ep=ep,
                         episodes=episodes, language=language, czech_titles=czech_titles,
-                        infos=infos, ids={k: params.get(k) for k in ("tmdbid", "imdbid", "tvdbid")})
+                        infos=infos, ids={k: params.get(k) for k in ("tmdbid", "imdbid", "tvdbid")},
+                        titles=titles, year=year)
 
 
 @router.get("/torznab/nzb/{ident}")

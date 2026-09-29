@@ -158,6 +158,13 @@ parser and custom formats already understand:
   (`Czech, English` for a dual-audio file), and the `tmdbid`/`imdb`/`tvdbid` of
   the search are echoed so a Czech-only file name still maps to the right title.
 - Stubs under 3 MB/min are dropped.
+- **Movie titles Radarr can map:** a Czech-only file name Radarr can't parse
+  (`Asterix a Obelix I. (1999)`, `Coco.mkv`) gets `<TMDB title> <year> - ` in
+  front, so Radarr maps it by title and imports it by itself (a release it can
+  only map by the echoed id is blocked from automatic import). Not when the name
+  already starts with title + year, nor when what follows the title hints at
+  another film (a sequel marker, or several words that aren't tags, genres or the
+  film's other names — e.g. a cast list).
 
 HDR/DV, bit depth, subtitles and the source (WEB/BluRay) are not in the probe
 and are never invented.

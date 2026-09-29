@@ -1026,3 +1026,43 @@ def test_czech_title_match_is_not_a_dub_when_tracks_say_otherwise(client, fake_w
     item = ET.fromstring(resp.content).find("channel/item")
     attrs = {a.get("name"): a.get("value") for a in item.findall(f"{NZNS}attr")}
     assert attrs["language"] == "English" and " CZ" not in item.findtext("title")
+
+
+def test_movie_title_prefix():
+    """Czech-named files Radarr can't parse get "<TMDB title> <year> - " in front,
+    so Radarr maps them by title and imports them itself (an id-only match is
+    blocked from automatic import) — unless the name hints at another film."""
+    from app.torznab import movie_title_prefix
+    titles = ["Asterix and Obelix Take On Caesar", "Asterix a Obelix"]
+    assert movie_title_prefix("Asterix and Obelix Take On Caesar", 1999, titles,
+                              "Asterix a Obelix I. (1999) 1080p CZ.mkv") == \
+        "Asterix and Obelix Take On Caesar 1999 - "
+    assert movie_title_prefix("Hotel Transylvania", 2012, ["Hotel Transylvania"],
+                              "Hotel.Transylvania.1(2012).1080p.CZ.SK.mkv") == "Hotel Transylvania 2012 - "
+    assert movie_title_prefix("Coco", 2017, ["Coco"], "Coco.mkv") == "Coco 2017 - "
+    # already "<title> <year>": nothing to add
+    assert movie_title_prefix("Toy Story", 1995, ["Toy Story"], "Toy.Story.1995.1080p.CZ.mkv") == ""
+    # a sequel or a name full of other words may be another film: leave it to Radarr
+    assert movie_title_prefix("Toy Story", 1995, ["Toy Story"], "Toy Story 2 CZ dabing.mkv") == ""
+    assert movie_title_prefix("Spider-Man: No Way Home", 2021, ["Spider-Man: No Way Home", "Spider-Man: Bez domova"],
+                              "Spider-Man-Bez domova (Tom Holland, Zendaya, Benedict Cumberbatch-2021).mkv") == ""
+    # genre words and the film's other names are fine
+    assert movie_title_prefix("A Bug's Life", 1998, ["A Bug's Life", "Zivot brouka"],
+                              "Zivot brouka (-1998 Animovany-Komedie-Rodinny-Bdrip.-1080p.) Cz Sk dabing.mkv") == \
+        "A Bug's Life 1998 - "
+    # no year from TMDB: no prefix
+    assert movie_title_prefix("Coco", 0, ["Coco"], "Coco.mkv") == ""
+
+
+def test_movie_feed_gets_title_prefix(client, fake_webshare, monkeypatch):
+    from app import torznab
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "tok")
+    _patch_tmdb(monkeypatch, torznab, ("Asterix and Obelix Take On Caesar", "Astérix et Obélix contre César",
+                                       "fr", ("Asterix a Obelix",), 1999), 0)
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [SearchResult("a", "Asterix a Obelix I. (1999) 1080p CZ.mkv", 4_700_000_000)]
+    resp = client.get("/torznab/api", params={"t": "movie", "apikey": "testkey", "tmdbid": "1227", "cat": "2000"})
+    title = ET.fromstring(resp.content).findtext("channel/item/title")
+    assert title.startswith("Asterix and Obelix Take On Caesar 1999 - Asterix a Obelix I.")
