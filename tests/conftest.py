@@ -94,6 +94,16 @@ def wait_for(predicate, timeout: float = 5.0) -> bool:
 
 
 @pytest.fixture(autouse=True)
+def _no_tmdb_runtime(monkeypatch):
+    """Tests never reach TMDB for runtimes; the runtime check stays off unless a
+    test patches `tmdb_runtime` itself."""
+    import app.torznab as torznab
+
+    async def none(*args, **kwargs):
+        return 0
+
+    monkeypatch.setattr(torznab, "tmdb_runtime", none)
+
 def _fresh_probe_state(monkeypatch):
     """The file_info cache and limiter are process-wide; start every test clean
     and without real back-off sleeps."""

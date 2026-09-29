@@ -782,3 +782,122 @@ def test_nzb_download_non_ascii_name(client):
     assert "filename*" not in cd                    # no RFC 5987 form
     assert "Rad" in cd and "Řád" not in cd          # transliterated
     cd.encode("ascii")                              # pure ASCII, header-safe
+
+
+def test_runtime_mismatch():
+    from app.torznab import runtime_mismatch
+    assert not runtime_mismatch(95 * 60, 100, "movie")      # normal cut
+    assert not runtime_mismatch(150 * 60, 100, "movie")     # extended cut
+    assert runtime_mismatch(22 * 60, 81, "movie")           # short special, not the feature
+    assert runtime_mismatch(0 + 60 * 5, 44, "tv")           # 5-minute excerpt
+    assert not runtime_mismatch(88 * 60, 44, "tv")          # double episode
+    assert runtime_mismatch(60 * 60, 7, "tv")               # hour-long doc vs 7-min episode
+    assert not runtime_mismatch(0, 100, "movie")            # unknown length
+    assert not runtime_mismatch(3600, 0, "movie")           # unknown runtime
+
+
+def _patch_tmdb(monkeypatch, torznab, result, minutes):
+    async def by_id(token, kind, tmdbid=None, imdbid=None, tvdbid=None):
+        return result
+
+    async def by_name(token, kind, q):
+        return None
+
+    async def runtime(token, kind, tmdbid=None, imdbid=None, tvdbid=None, season=None, ep=None):
+        return minutes
+
+    monkeypatch.setattr(torznab, "tmdb_lookup_by_id", by_id)
+    monkeypatch.setattr(torznab, "tmdb_lookup", by_name)
+    monkeypatch.setattr(torznab, "tmdb_runtime", runtime)
+
+
+def test_movie_search_drops_files_far_off_the_tmdb_runtime(client, fake_webshare, monkeypatch):
+    """An id search knows the movie's runtime; a file with the right name but a
+    fraction of the length is a special/excerpt ("Toy Story That Time Forgot"
+    for Toy Story), not the movie."""
+    from app import torznab
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "tok")
+    _patch_tmdb(monkeypatch, torznab, ("Toy Story", "", "en", ("Příběh hraček",), 1995), 81)
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("full", "Toy Story 1995 1080p CZ.mkv", 4_000_000_000),
+        SearchResult("spec", "Toy Story That Time Forgot 1080p CZ.mkv", 1_000_000_000),
+        SearchResult("unk", "Toy Story 1995 CZ dabing.avi", 700_000_000),
+    ]
+    info = {"width": 1920, "height": 1080, "format": "H264", "type": "mkv"}
+    fake_webshare.file_infos = {"full": {**info, "length": 81 * 60},
+                                "spec": {**info, "length": 22 * 60},
+                                "unk": {**info, "length": 0}}
+    resp = client.get("/torznab/api", params={
+        "t": "movie", "apikey": "testkey", "tmdbid": "862", "cat": "2000"})
+    root = ET.fromstring(resp.content)
+    titles = [i.findtext("title") for i in root.findall("channel/item")]
+    assert any("1995 1080p" in x for x in titles)
+    assert not any("That Time Forgot" in x for x in titles)
+    assert any("dabing" in x for x in titles)  # unknown length is kept
+
+
+def test_episode_search_drops_other_content_by_runtime(client, fake_webshare, monkeypatch):
+    """A 7-minute Bluey episode vs an hour-long file that merely carries the
+    right marker: the runtime tells them apart even when the name matches."""
+    from app import torznab
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "tok")
+    _patch_tmdb(monkeypatch, torznab, ("Bluey", "", "en", (), 2018), 7)
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("ok", "Bluey S01E01 Magic Xylophone 1080p CZ.mkv", 300_000_000),
+        SearchResult("long", "Bluey S01E01 1080p BluRay Remux CZ.mkv", 10_700_000_000),
+    ]
+    info = {"width": 1920, "height": 1080, "format": "H264", "type": "mkv"}
+    fake_webshare.file_infos = {"ok": {**info, "length": 7 * 60},
+                                "long": {**info, "length": 59 * 60}}
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "tvdbid": "353546", "season": "1", "ep": "1"})
+    root = ET.fromstring(resp.content)
+    titles = [i.findtext("title") for i in root.findall("channel/item")]
+    assert len(titles) == 1 and "Magic Xylophone" in titles[0]
+
+
+def test_runtime_check_fills_the_limit_after_dropping(client, fake_webshare, monkeypatch):
+    """Files dropped by length must not leave *arr with fewer results than it
+    asked for while good ones exist further down the list."""
+    from app import torznab
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "tok")
+    _patch_tmdb(monkeypatch, torznab, ("Toy Story", "", "en", (), 1995), 81)
+    fake_webshare.fuzzy = True
+    info = {"width": 1920, "height": 1080, "format": "H264", "type": "mkv"}
+    fake_webshare.results = [
+        SearchResult("s1", "Toy Story 1995 extra A 1080p CZ.mkv", 9_000_000_000),
+        SearchResult("s2", "Toy Story 1995 extra B 1080p CZ.mkv", 8_000_000_000),
+        SearchResult("f1", "Toy Story 1995 1080p CZ.mkv", 4_000_000_000),
+        SearchResult("f2", "Toy Story 1995 720p CZ.mkv", 2_000_000_000),
+    ]
+    fake_webshare.file_infos = {"s1": {**info, "length": 10 * 60}, "s2": {**info, "length": 12 * 60},
+                                "f1": {**info, "length": 81 * 60}, "f2": {**info, "length": 80 * 60}}
+    resp = client.get("/torznab/api", params={
+        "t": "movie", "apikey": "testkey", "tmdbid": "862", "cat": "2000", "limit": "2"})
+    root = ET.fromstring(resp.content)
+    guids = [i.findtext("guid") for i in root.findall("channel/item")]
+    assert guids == ["websharr-f1", "websharr-f2"]
+
+
+def test_runtime_check_off_without_known_runtime(client, fake_webshare, monkeypatch):
+    """No TMDB runtime (or no token) -> nothing is dropped by length."""
+    from app import torznab
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "tok")
+    _patch_tmdb(monkeypatch, torznab, ("Toy Story", "", "en", (), 1995), 0)
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [SearchResult("spec", "Toy Story 1995 1080p CZ.mkv", 1_000_000_000)]
+    fake_webshare.file_infos = {"spec": {"length": 60, "width": 1920, "height": 1080}}
+    resp = client.get("/torznab/api", params={
+        "t": "movie", "apikey": "testkey", "tmdbid": "862", "cat": "2000"})
+    root = ET.fromstring(resp.content)
+    assert len(root.findall("channel/item")) == 1

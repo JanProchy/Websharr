@@ -28,6 +28,7 @@ from .nzb import build_nzb
 from .settings import settings
 from .tmdb import lookup as tmdb_lookup
 from .tmdb import lookup_by_id as tmdb_lookup_by_id
+from .tmdb import runtime as tmdb_runtime
 from .webshare import SearchResult, WebshareError
 
 logger = logging.getLogger("websharr.torznab")
@@ -256,7 +257,7 @@ def resolution_class(width: int, height: int) -> int:
 # file_info is cheap (~30 ms) but Webshare answers HTTP 403 once more than ~6
 # calls run at the same time — and *arr fires several searches in parallel, so a
 # per-request limit wasn't enough: the 403s were swallowed and the files lost
-# their resolution label and audio language. One process-wide
+# their resolution label, audio language and runtime check. One process-wide
 # limit, a short retry on 403/429/5xx, and a cache (a Webshare file never
 # changes under its ident) keep the probe reliable.
 _PROBE_CONCURRENCY = 4
@@ -299,30 +300,53 @@ async def _file_info(client, ident: str) -> dict:
     return {}
 
 
-async def _probe(client, results: list[SearchResult]) -> tuple[dict[str, int], dict[str, str]]:
+async def _probe(client, results: list[SearchResult], all_files: bool = False
+                 ) -> tuple[dict[str, int], dict[str, str], dict[str, int]]:
     """Fetch file_info for results whose *name* leaves something open, and
-    return (heights, audio): the video height for names without a resolution
-    token — many CZ files ship without one and Sonarr/Radarr reject them as
-    'Unknown' quality otherwise — and "Czech"/"Slovak" for names without a
+    return (heights, audio, lengths): the video height for names without a
+    resolution token — many CZ files ship without one and Sonarr/Radarr reject
+    them as 'Unknown' quality otherwise — "Czech"/"Slovak" for names without a
     language marker whose audio track says so (a TV-rip dub named just
-    "... 1080p WEB-DL prima+")."""
-    need = [r for r in results if not _RES_RE.search(r.name) or not dub_language(r.name)]
+    "... 1080p WEB-DL prima+"), and the duration in seconds of every probed file.
+    `all_files` probes every result (for the runtime check), not just those."""
+    need = results if all_files else \
+        [r for r in results if not _RES_RE.search(r.name) or not dub_language(r.name)]
     if not need:
-        return {}, {}
+        return {}, {}, {}
 
     async def one(r: SearchResult):
         return r, await _file_info(client, r.ident)
 
     heights: dict[str, int] = {}
     audio: dict[str, str] = {}
+    lengths: dict[str, int] = {}
     for r, info in await asyncio.gather(*(one(r) for r in need)):
+        if int(info.get("length") or 0) > 0:
+            lengths[r.ident] = int(info["length"])
         height = resolution_class(int(info.get("width") or 0), int(info.get("height") or 0))
         if height and not _RES_RE.search(r.name):
             heights[r.ident] = height
         lang = audio_language(info.get("audio_languages"))
         if lang and not dub_language(r.name):
             audio[r.ident] = lang
-    return heights, audio
+    return heights, audio, lengths
+
+
+# How far a file's duration may stray from the TMDB runtime, as (min, max)
+# fractions. Movies allow extended cuts; episodes allow double episodes.
+_RUNTIME_BOUNDS = {"movie": (0.6, 1.6), "tv": (0.5, 2.6)}
+
+
+def runtime_mismatch(length_s: int, minutes: int, kind: str) -> bool:
+    """True when a file of `length_s` seconds can't be the title TMDB says runs
+    `minutes` — a 7-minute Bluey episode vs an hour of "Blue Planet", a feature
+    vs a short special, a full episode vs a 5-minute excerpt. Unknown on either
+    side is never a mismatch."""
+    if not length_s or not minutes or kind not in _RUNTIME_BOUNDS:
+        return False
+    lo, hi = _RUNTIME_BOUNDS[kind]
+    ratio = length_s / 60 / minutes
+    return ratio < lo or ratio > hi
 
 
 _EP_TOKEN = re.compile(r"^(s\d{1,2}e\d{1,3}|s\d{1,2}|\d{1,2}x\d{1,3}|\d{1,4})$")
@@ -758,8 +782,29 @@ async def torznab_api(request: Request):
 
     merged.sort(key=lambda r: (-relevance(queries, r.name), -r.size))
     logger.info("Newznab %s q=%r -> %d results", t, q, len(merged))
-    shown = merged[:limit]
-    heights, audio = await _probe(client, shown)
+    # With an exact id, TMDB knows how long the title runs; files far off that
+    # are another title that shares the name, a special or an excerpt.
+    minutes = 0
+    kind = "tv" if t == "tvsearch" else "movie"
+    if settings.tmdb_token and t in ("tvsearch", "movie") and (
+            params.get("tmdbid") or params.get("imdbid") or params.get("tvdbid")):
+        minutes = await tmdb_runtime(settings.tmdb_token, kind, params.get("tmdbid"),
+                                     params.get("imdbid"), params.get("tvdbid"),
+                                     season if t == "tvsearch" else None,
+                                     ep if t == "tvsearch" else None)
+    # Check a few more than asked for, so dropped files don't leave *arr with
+    # fewer results than the limit when more good ones exist.
+    shown = merged[:limit * 2] if minutes else merged[:limit]
+    heights, audio, lengths = await _probe(client, shown, all_files=bool(minutes))
+    if minutes:
+        kept = []
+        for r in shown:
+            if runtime_mismatch(lengths.get(r.ident, 0), minutes, kind):
+                logger.info("Dropped %r: %d min, expected ~%d min",
+                            r.name, lengths[r.ident] // 60, minutes)
+                continue
+            kept.append(r)
+        shown = kept[:limit]
     return _render_feed(request, shown, category, heights=heights, audio=audio,
                         query=display, season=(season if t == "tvsearch" else None), ep=ep,
                         episodes=episodes, language=language, czech_titles=czech_titles)

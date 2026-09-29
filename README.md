@@ -132,6 +132,13 @@ looking the request up in **TMDB**:
 The token is optional — without it, aliases still work and everything else runs
 as normal; you just lose the automatic Czech-title resolution.
 
+With the token, ID-based searches (what Sonarr/Radarr send via Prowlarr) also
+**check each file's duration** against the TMDB runtime of the movie or episode
+and drop files far off it — an hour-long documentary that happens to start with
+a short show's Czech name, a 20-minute special named like the feature, a
+5-minute excerpt. Extended cuts (up to 1.6×) and double episodes (up to 2.6×)
+still pass; files of unknown length are kept.
+
 ## Monitoring and notifications
 
 - **Health check.** `GET /health` (no API key) returns `200` when the download
