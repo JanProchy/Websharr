@@ -31,3 +31,17 @@ def test_sanitize_filename():
         assert ".." not in cleaned
         assert "/" not in cleaned and "\\" not in cleaned
         assert not cleaned.startswith(".")
+
+
+def test_sanitize_filename_keeps_extension_after_double_dot():
+    """"Doctor Strange (2016) CZ dab. 1080p..mkv" (a real Webshare name) became
+    "..._mkv": the ".." -> "_" replacement ate the extension dot, and *arr found
+    "no files eligible for import". Runs of dots collapse to one instead."""
+    assert sanitize_filename("Doctor Strange (2016) CZ dab. 1080p..mkv") == \
+        "Doctor Strange (2016) CZ dab. 1080p.mkv"
+    assert sanitize_filename("Film...avi") == "Film.avi"
+    # still no way out of the folder
+    for hostile in ("../../etc/passwd", "..\\..\\x.mkv", "...hidden.mkv"):
+        cleaned = sanitize_filename(hostile)
+        assert "/" not in cleaned and "\\" not in cleaned and ".." not in cleaned
+        assert not cleaned.startswith(".")
