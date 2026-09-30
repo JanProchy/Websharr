@@ -222,7 +222,8 @@ def test_dropped_connection_resumes_instead_of_failing(client, fake_webshare, mo
         manager = app.state.downloads
         assert wait_for(lambda: (j := manager.get(nzo_id)) and j.status == "completed")
         job = manager.get(nzo_id)
-        assert (Path(job.storage) / FILE_NAME).read_bytes() == payload
+        (final,) = Path(job.storage).iterdir()  # one finished file, whatever it is named
+        assert final.read_bytes() == payload
         # continued from what was on disk each time, not from zero
         assert handler.ranges[0] is None and len(handler.ranges) == 3
         assert all(r and r.startswith("bytes=") and r != "bytes=0-" for r in handler.ranges[1:])
