@@ -132,7 +132,7 @@ def _caps() -> Response:
     searching = ET.SubElement(caps, "searching")
     ET.SubElement(searching, "search", {"available": "yes", "supportedParams": "q"})
     ET.SubElement(searching, "tv-search",
-                  {"available": "yes", "supportedParams": "q,season,ep,tvdbid,imdbid"})
+                  {"available": "yes", "supportedParams": "q,season,ep,tvdbid,imdbid,tmdbid"})
     ET.SubElement(searching, "movie-search",
                   {"available": "yes", "supportedParams": "q,imdbid,tmdbid"})
     cats = ET.SubElement(caps, "categories")
