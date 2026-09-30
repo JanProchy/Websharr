@@ -25,6 +25,32 @@ _TARGET_LOGGERS = ("", "uvicorn.access", "uvicorn.error")
 _SPAM = re.compile(r"GET /ui/api/(status|queue|history|log)\b")
 
 
+# Sonarr/Radarr/Prowlarr pass the API key in the query string (?apikey=...),
+# and uvicorn's access log writes the whole path — so the key ended up in
+# `docker logs` and in the UI Log tab. Mask it (and similar secrets) in place.
+_SECRET_PARAM = re.compile(r"(?i)\b(apikey|api_key|token|password)=[^&\s\"']+")
+
+
+def redact(text: str) -> str:
+    return _SECRET_PARAM.sub(r"\1=***", text)
+
+
+class RedactSecrets(logging.Filter):
+    """Mask secret query parameters in a record's message and arguments.
+
+    The arguments are rewritten in place, not folded into the message:
+    uvicorn's AccessFormatter unpacks the five access-log args itself."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = redact(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(redact(a) if isinstance(a, str) else a for a in record.args)
+        elif isinstance(record.args, dict):
+            record.args = {k: redact(v) if isinstance(v, str) else v for k, v in record.args.items()}
+        return True
+
+
 class RingBufferHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         global _SEQ
@@ -52,6 +78,11 @@ def install(level: int = logging.INFO) -> None:
         lg = logging.getLogger(name)
         if not any(isinstance(h, RingBufferHandler) for h in lg.handlers):
             lg.addHandler(handler)
+    # A logger filter runs before every handler: stdout (docker logs) and the
+    # ring buffer both get the masked line.
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, RedactSecrets) for f in access.filters):
+        access.addFilter(RedactSecrets())
 
 
 def records(after: int = 0, limit: int = 500) -> list[dict]:
