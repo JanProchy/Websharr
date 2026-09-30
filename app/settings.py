@@ -13,7 +13,7 @@ import logging
 import secrets
 import time
 
-from .config import config
+from .config import config, parse_categories
 
 logger = logging.getLogger("websharr.settings")
 
@@ -65,7 +65,12 @@ class Settings:
         # Apprise notification URLs + VIP-expiry warning threshold (days).
         self.notify_urls: list[str] = list(config.notify_urls)
         self.notify_vip_days: int = config.notify_vip_days
+        # SABnzbd download categories (besides the implicit "*"); env var is the
+        # initial default, editable in the UI.
+        self.categories: list[str] = list(config.categories)
         self.theme: str = DEFAULT_THEME
+        # Websharr's own release-title tags for custom formats (see README).
+        self.release_tags: bool = config.release_tags
 
     @property
     def configured(self) -> bool:
@@ -103,8 +108,15 @@ class Settings:
             self.notify_vip_days = int(data.get("notify_vip_days") or config.notify_vip_days)
         except (TypeError, ValueError):
             self.notify_vip_days = config.notify_vip_days
+        try:
+            cats = data.get("categories")
+            self.categories = parse_categories(cats) if isinstance(cats, list) else list(config.categories)
+        except ValueError:
+            self.categories = list(config.categories)
         theme = data.get("theme", DEFAULT_THEME)
         self.theme = theme if theme in THEMES else DEFAULT_THEME
+        tags = data.get("release_tags")
+        self.release_tags = tags if isinstance(tags, bool) else config.release_tags
 
     def save(self) -> None:
         path = config.settings_file
@@ -123,7 +135,9 @@ class Settings:
             "max_concurrent": self.max_concurrent,
             "notify_urls": self.notify_urls,
             "notify_vip_days": self.notify_vip_days,
+            "categories": self.categories,
             "theme": self.theme,
+            "release_tags": self.release_tags,
         }
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         path.chmod(0o600)

@@ -28,6 +28,7 @@ from .nzb import build_nzb
 from .settings import settings
 from .tmdb import lookup as tmdb_lookup
 from .tmdb import lookup_by_id as tmdb_lookup_by_id
+from .tmdb import runtime as tmdb_runtime
 from .webshare import SearchResult, WebshareError
 
 logger = logging.getLogger("websharr.torznab")
@@ -93,9 +94,26 @@ def dub_language(name: str) -> str:
     return "Czech"
 
 
-# Audio-track language codes (Webshare file_info) that mean a CZ/SK release.
-_AUDIO_CZECH = {"CZE", "CES", "CS", "CZ"}
-_AUDIO_SLOVAK = {"SLO", "SLK", "SK"}
+# Audio-track language codes (Webshare file_info, ISO 639-2/1) -> *arr language names.
+_ISO_LANGS = {
+    "CZE": "Czech", "CES": "Czech", "CS": "Czech", "CZ": "Czech",
+    "SLO": "Slovak", "SLK": "Slovak", "SK": "Slovak",
+    "ENG": "English", "EN": "English", "GER": "German", "DEU": "German", "FRE": "French",
+    "FRA": "French", "SPA": "Spanish", "ITA": "Italian", "POL": "Polish", "HUN": "Hungarian",
+    "RUS": "Russian", "UKR": "Ukrainian", "JPN": "Japanese", "KOR": "Korean", "CHI": "Chinese",
+    "ZHO": "Chinese", "DAN": "Danish", "SWE": "Swedish", "NOR": "Norwegian", "FIN": "Finnish",
+    "DUT": "Dutch", "NLD": "Dutch", "POR": "Portuguese", "TUR": "Turkish",
+}
+
+
+def track_languages(codes) -> list[str]:
+    """*arr language names of the tagged audio tracks, CZ/SK first, no duplicates."""
+    out: list[str] = []
+    for code in codes or ():
+        name = _ISO_LANGS.get((code or "").strip().upper())
+        if name and name not in out:
+            out.append(name)
+    return sorted(out, key=lambda n: n not in ("Czech", "Slovak"))
 
 
 def audio_language(codes) -> str:
@@ -104,12 +122,8 @@ def audio_language(codes) -> str:
     Only a positive signal: track tags are often missing or wrong, so their
     absence never overrides a marker in the file name.
     """
-    codes = {(c or "").strip().upper() for c in codes or ()}
-    if codes & _AUDIO_CZECH:
-        return "Czech"
-    if codes & _AUDIO_SLOVAK:
-        return "Slovak"
-    return ""
+    langs = track_languages(codes)
+    return "Czech" if "Czech" in langs else "Slovak" if "Slovak" in langs else ""
 
 
 def _xml_response(element: ET.Element, status_code: int = 200) -> Response:
@@ -132,7 +146,7 @@ def _caps() -> Response:
     searching = ET.SubElement(caps, "searching")
     ET.SubElement(searching, "search", {"available": "yes", "supportedParams": "q"})
     ET.SubElement(searching, "tv-search",
-                  {"available": "yes", "supportedParams": "q,season,ep,tvdbid,imdbid"})
+                  {"available": "yes", "supportedParams": "q,season,ep,tvdbid,imdbid,tmdbid"})
     ET.SubElement(searching, "movie-search",
                   {"available": "yes", "supportedParams": "q,imdbid,tmdbid"})
     cats = ET.SubElement(caps, "categories")
@@ -253,35 +267,102 @@ def resolution_class(width: int, height: int) -> int:
     return max(by_width, by_height)
 
 
-async def _probe(client, results: list[SearchResult]) -> tuple[dict[str, int], dict[str, str]]:
+# file_info is cheap (~30 ms) but Webshare answers HTTP 403 once more than ~6
+# calls run at the same time — and *arr fires several searches in parallel, so a
+# per-request limit wasn't enough: the 403s were swallowed and the files lost
+# their resolution label, audio language and runtime check. One process-wide
+# limit, a short retry on 403/429/5xx, and a cache (a Webshare file never
+# changes under its ident) keep the probe reliable.
+_PROBE_CONCURRENCY = 4
+_PROBE_RETRIES = (0.5, 1.5, 3.0)
+_PROBE_CACHE_MAX = 5000
+_probe_sem: asyncio.Semaphore | None = None
+_probe_cache: dict[str, dict] = {}
+
+
+def _semaphore() -> asyncio.Semaphore:
+    global _probe_sem
+    if _probe_sem is None:
+        _probe_sem = asyncio.Semaphore(_PROBE_CONCURRENCY)
+    return _probe_sem
+
+
+async def _file_info(client, ident: str) -> dict:
+    """file_info with a process-wide concurrency limit, retry and cache; {} on failure."""
+    if ident in _probe_cache:
+        return _probe_cache[ident]
+    for delay in (*_PROBE_RETRIES, None):
+        try:
+            async with _semaphore():
+                info = await client.file_info(ident)
+        except httpx.HTTPStatusError as exc:
+            retryable = exc.response.status_code in (403, 429) or exc.response.status_code >= 500
+            if retryable and delay is not None:
+                await asyncio.sleep(delay)
+                continue
+            logger.warning("file_info %s failed: HTTP %s", ident, exc.response.status_code)
+            return {}
+        except (WebshareError, httpx.HTTPError) as exc:
+            logger.warning("file_info %s failed: %s", ident, exc)
+            return {}
+        if info:
+            if len(_probe_cache) >= _PROBE_CACHE_MAX:
+                _probe_cache.pop(next(iter(_probe_cache)))
+            _probe_cache[ident] = info
+        return info
+    return {}
+
+
+async def _probe(client, results: list[SearchResult], all_files: bool = False
+                 ) -> tuple[dict[str, int], dict[str, str], dict[str, int], dict[str, dict]]:
     """Fetch file_info for results whose *name* leaves something open, and
-    return (heights, audio): the video height for names without a resolution
-    token — many CZ files ship without one and Sonarr/Radarr reject them as
-    'Unknown' quality otherwise — and "Czech"/"Slovak" for names without a
+    return (heights, audio, lengths): the video height for names without a
+    resolution token — many CZ files ship without one and Sonarr/Radarr reject
+    them as 'Unknown' quality otherwise — "Czech"/"Slovak" for names without a
     language marker whose audio track says so (a TV-rip dub named just
-    "... 1080p WEB-DL prima+")."""
-    need = [r for r in results if not _RES_RE.search(r.name) or not dub_language(r.name)]
+    "... 1080p WEB-DL prima+"), and the duration in seconds of every probed file.
+    `all_files` probes every result (for the runtime check), not just those."""
+    need = results if all_files else \
+        [r for r in results if not _RES_RE.search(r.name) or not dub_language(r.name)]
     if not need:
-        return {}, {}
-    sem = asyncio.Semaphore(6)
+        return {}, {}, {}, {}
 
     async def one(r: SearchResult):
-        async with sem:
-            try:
-                return r, await client.file_info(r.ident)
-            except (WebshareError, httpx.HTTPError):
-                return r, {}
+        return r, await _file_info(client, r.ident)
 
     heights: dict[str, int] = {}
     audio: dict[str, str] = {}
+    lengths: dict[str, int] = {}
+    infos: dict[str, dict] = {}
     for r, info in await asyncio.gather(*(one(r) for r in need)):
+        if info:
+            infos[r.ident] = info
+        if int(info.get("length") or 0) > 0:
+            lengths[r.ident] = int(info["length"])
         height = resolution_class(int(info.get("width") or 0), int(info.get("height") or 0))
         if height and not _RES_RE.search(r.name):
             heights[r.ident] = height
         lang = audio_language(info.get("audio_languages"))
         if lang and not dub_language(r.name):
             audio[r.ident] = lang
-    return heights, audio
+    return heights, audio, lengths, infos
+
+
+# How far a file's duration may stray from the TMDB runtime, as (min, max)
+# fractions. Movies allow extended cuts; episodes allow double episodes.
+_RUNTIME_BOUNDS = {"movie": (0.6, 1.6), "tv": (0.5, 2.6)}
+
+
+def runtime_mismatch(length_s: int, minutes: int, kind: str) -> bool:
+    """True when a file of `length_s` seconds can't be the title TMDB says runs
+    `minutes` — a 7-minute Bluey episode vs an hour of "Blue Planet", a feature
+    vs a short special, a full episode vs a 5-minute excerpt. Unknown on either
+    side is never a mismatch."""
+    if not length_s or not minutes or kind not in _RUNTIME_BOUNDS:
+        return False
+    lo, hi = _RUNTIME_BOUNDS[kind]
+    ratio = length_s / 60 / minutes
+    return ratio < lo or ratio > hi
 
 
 _EP_TOKEN = re.compile(r"^(s\d{1,2}e\d{1,3}|s\d{1,2}|\d{1,2}x\d{1,3}|\d{1,4})$")
@@ -389,6 +470,237 @@ async def expand_titles(t: str, q: str, cat: str | None, *, tvdbid: str | None =
     return titles, display, language, czech_titles, year
 
 
+# Releases that are never the title itself: cinema recordings, trailers and
+# samples, 3D frame-packed versions. Matched on whole normalized tokens (not
+# substrings), after the extension is stripped so a ".ts" container isn't "TS".
+_JUNK_TOKENS = frozenset("""
+cam camrip hdcam ts telesync hdts tc telecine hdtc scr screener dvdscr bdscr webscr
+kinorip pdvd predvd predvdrip r5
+trailer trailers teaser sample ukazka upoutavka upoutavky
+3d sbs hsbs mvc
+""".split())
+_JUNK_PHRASES = (("kino", "rip"), ("hq", "clean", "audio"), ("half", "ou"))
+_MOVIE_EP_RE = re.compile(r"(?<![a-z0-9])s\d{1,2}\s?e\d{1,3}(?!\d)|(?<!\d)\d{1,2}x\d{2}(?!\d)", re.I)
+
+
+def junk_reason(name: str, movie: bool = False) -> str:
+    """Why a file is never the wanted title ("" when it may be): a cinema
+    recording (CAM/TS/TC/screener/kinorip), a trailer or sample, a 3D
+    frame-packed version, or — in a movie search — an episode (a one-word title
+    like "Avatar" otherwise pulls in a whole series)."""
+    stem = name.rsplit(".", 1)[0] if _is_video(name) else name
+    toks = normalize_text(stem).split()
+    hit = next((t for t in toks if t in _JUNK_TOKENS), "")
+    if hit:
+        return hit
+    for phrase in _JUNK_PHRASES:
+        n = len(phrase)
+        if any(tuple(toks[i:i + n]) == phrase for i in range(len(toks) - n + 1)):
+            return " ".join(phrase)
+    if movie and _MOVIE_EP_RE.search(stem):
+        return "episode in a movie search"
+    return ""
+
+
+# --- measured quality -------------------------------------------------------
+# Webshare's file_info is a media probe: resolution, video codec, duration,
+# overall bitrate and every audio track (codec, channels, language) are real.
+# It does NOT know HDR/DV, bit depth, subtitles or the source (WEB/BluRay), so
+# those are never invented. What is measured goes into the release title as
+# tokens *arr's parser and custom formats already understand.
+
+# Below this a file is a stub, not a watchable encode (HARAKIRI.mp4: 10 MB / 135 min).
+_TORSO_MB_PER_MIN = 3
+# Bitrate floors (MB/min) under which an encode is visibly starved — x264 / HEVC
+# (HEVC needs ~0.7x for the same picture). Scene 1080p x264 runs 40–100.
+_LOW_BITRATE = {1080: (20, 14), 720: (12, 8)}
+# A real UHD encode is >= ~30 MB/min; "2160p" below that is an upscale.
+_UHD_FLOOR = 30
+
+_HAS_CODEC_RE = re.compile(r"\b(x ?26[45]|h ?\.?26[45]|hevc|avc|xvid|divx|av1|vc-?1|mpeg-?[24])\b", re.I)
+_HAS_AUDIO_RE = re.compile(
+    r"(\bdd\+|\bddp|\be-?ac-?3|\bac-?3|\baac|\bdts|\btruehd|\batmos|\bflac|\bmp3|\bopus|\bl?pcm)", re.I)
+_UHD_CLAIM_RE = re.compile(r"\b(2160p?|4k|uhd)\b", re.I)
+# Uploaders mark AI upscales in the name ("1080p.AI.WEB", "AI.Upscale.2160p",
+# "Regrade"); TRaSH's Upscaled custom format misses the bare "AI" form. A lone
+# "AI" only counts next to a resolution/source/codec tag, so titles like
+# "Ai Weiwei" stay untouched.
+_UPSCALE_WORDS = frozenset({"upscale", "upscaled", "upscaling", "aius", "regrade", "regraded"})
+_AI_NEIGHBOURS = frozenset({"web", "webrip", "webdl", "dl", "bluray", "bdrip", "brrip", "hdtv", "uhd", "fhd", "4k",
+                            "enhanced", "remaster", "remastered", "x264", "x265", "h264", "h265", "hevc", "avc"})
+_RES_TOKEN_RE = re.compile(r"^\d{3,4}p$")
+_HEVC_FORMATS = {"HEVC", "H265", "H.265"}
+_AVC_FORMATS = {"H264", "AVC", "H.264"}
+_CHANNELS = {8: "7.1", 7: "6.1", 6: "5.1", 3: "2.1", 2: "2.0", 1: "1.0"}
+# Audio codec preference, best first (DTS with 8 channels is DTS-HD MA / DTS:X —
+# the lossy DTS core tops out at 6).
+_AUDIO_RANK = {"TRUEHD": 6, "DTSHD": 5, "FLAC": 5, "EAC3": 4, "DTS": 3, "AC3": 2, "AAC": 1, "MP3": 0}
+
+
+def _mb_per_min(size: int, length_s: int) -> float:
+    return size / 1048576 / (length_s / 60) if size and length_s else 0.0
+
+
+def is_torso(size: int, length_s: int) -> bool:
+    """A few MB per minute: a stub/broken upload, not a watchable encode."""
+    mbmin = _mb_per_min(size, length_s)
+    return bool(mbmin) and mbmin < _TORSO_MB_PER_MIN
+
+
+def audio_token(info: dict, prefer: tuple[str, ...] = ()) -> str:
+    """Release-title token for the best audio track ("DDP5.1", "DTS-HD MA 7.1",
+    "TrueHD 7.1", "AAC2.0"…), taken from the tracks in the preferred languages
+    (e.g. the Czech dub) when there are any. "" when nothing is known."""
+    tracks = info.get("audio") or []
+    pool = [t for t in tracks if _ISO_LANGS.get(t.get("language", "")) in prefer] or tracks
+    best, best_key = None, (-1, -1)
+    for t in pool:
+        fmt, ch = t.get("format", ""), int(t.get("channels") or 0)
+        kind = "DTSHD" if fmt.startswith("DTS") and ch >= 8 else ("DTS" if fmt.startswith("DTS") else fmt)
+        key = (_AUDIO_RANK.get(kind, -1), ch)
+        if key > best_key:
+            best, best_key = (kind, ch), key
+    if not best or best_key[0] < 0:
+        return ""
+    kind, ch = best
+    chs = _CHANNELS.get(ch, "")
+    return {
+        "TRUEHD": f"TrueHD {chs}", "DTSHD": f"DTS-HD MA {chs}", "DTS": f"DTS {chs}",
+        "FLAC": f"FLAC {chs}", "EAC3": f"DDP{chs}", "AC3": f"DD{chs}", "AAC": f"AAC{chs}",
+        "MP3": "MP3",
+    }[kind].strip()
+
+
+def upscale_claim(name: str) -> bool:
+    """True when the name says the picture is an (AI) upscale."""
+    toks = [x for x in re.split(r"[^a-z0-9]+", name.lower()) if x]
+    for i, tok in enumerate(toks):
+        if tok in _UPSCALE_WORDS:
+            return True
+        if tok == "ai" and any(n in _AI_NEIGHBOURS or _RES_TOKEN_RE.match(n) for n in toks[max(0, i - 1):i + 2]):
+            return True
+    return False
+
+
+def quality_tokens(name: str, size: int, info: dict, *, czech: bool = False,
+                   tags: bool = False) -> tuple[str, list[str]]:
+    """(name with a corrected resolution, extra tokens) from the measured file.
+
+    - a resolution claim ("4K"/"UHD"/"2160p"/"1080p"…) that measures lower is
+      replaced by the real height (a 1080p inside a "4K" name, a 720p inside a
+      "1080p" one); an understated name is left alone
+    - codec (x264/x265, never a bare "HEVC"/"AVC": with "BluRay" those read as
+      BR-DISK) and the best audio track, only when the name carries none — the
+      uploader's own tags (Atmos, DTS-HD, HDR…) stay authoritative
+    - "Upscaled" for 2160p below a real UHD bitrate, and for a name that says
+      "AI"/"Upscale"/"Regrade" (a TRaSH custom format already blocks it)
+
+    With `tags` (the "Release tags" setting), also Websharr's own tokens, which
+    only mean something to custom formats made for them (see the README):
+    - "LowBitrate" for a starved 720p/1080p encode — to score, not a hard
+      reject: an old CZ dub may have nothing better
+    - "CZaudio"/"SKaudio" when a track is tagged Czech/Slovak (a verified dub,
+      not just a name claim), "CZunverified" when the name claims a dub the
+      tagged tracks don't show
+    """
+    upscaled = upscale_claim(name) and not re.search(r"\bupscaled\b", name, re.I)
+    if not info:
+        return name, ["Upscaled"] if upscaled else []
+    tokens: list[str] = []
+    measured = resolution_class(int(info.get("width") or 0), int(info.get("height") or 0))
+    if measured:
+        claims = [2160 for _ in _UHD_CLAIM_RE.findall(name)] + [int(r) for r in _RES_RE.findall(name)]
+        if claims and max(claims) > measured:
+            # the name overstates the picture ("4K"/"1080p" with 720p inside): say what it is
+            name = _UHD_CLAIM_RE.sub(f"{measured}p", name)
+            name = _RES_RE.sub(lambda m: f"{measured}p" if int(m.group(1)) > measured else m.group(0), name)
+    fmt = (info.get("format") or "").upper()
+    if not _HAS_CODEC_RE.search(name):
+        if fmt in _HEVC_FORMATS:
+            tokens.append("x265")
+        elif fmt in _AVC_FORMATS:
+            tokens.append("x264")
+    if not _HAS_AUDIO_RE.search(name):
+        tok = audio_token(info, ("Czech", "Slovak") if czech else ())
+        if tok:
+            tokens.append(tok)
+    mbmin = _mb_per_min(size, int(info.get("length") or 0))
+    klass = measured or next((int(m) for m in _RES_RE.findall(name)), 0)
+    if upscaled or (mbmin and klass >= 2160 and mbmin < _UHD_FLOOR):
+        tokens.append("Upscaled")
+    elif tags and mbmin and klass in _LOW_BITRATE:
+        floor = _LOW_BITRATE[klass][1 if fmt in _HEVC_FORMATS else 0]
+        if mbmin < floor:
+            tokens.append("LowBitrate")
+    langs = track_languages(info.get("audio_languages")) if tags else []
+    if "Czech" in langs:
+        tokens.append("CZaudio")
+    elif "Slovak" in langs:
+        tokens.append("SKaudio")
+    elif langs and dub_language(name):
+        tokens.append("CZunverified")  # named as a dub, the tagged tracks say otherwise
+    return name, tokens
+
+
+# --- movie release titles Radarr can map by title --------------------------
+# Words that may follow a movie title in a CZ upload without meaning another
+# film: language/tech tags and the genre list uploaders like to append.
+_MOVIE_TAIL_WORDS = frozenset("""
+cz sk en eng cze czech slovak cesky slovensky dab dabing dabovano dub dubbed titulky tit sub subs
+de ger german fr fre french it ita es spa pl pol hu hun ru rus jp jap jpn kor chi
+multi multidub dual audio hd fhd uhd full web webdl webrip dl bluray bdrip brrip hdtv tvrip dvdrip
+remux hevc avc aac ac3 eac3 dts dd ddp atmos truehd hdr dv mkv avi mp4 film movie verze version
+extended edition directors cut remastered kolekce collection
+animovany animovana komedie rodinny rodinna dobrodruzny akcni fantasy sci fi drama horor thriller
+krimi western pohadka muzikal romanticky valecny historicky dokument dokumentarni mysteriozni
+""".split())
+_RELEASE_GROUP_RE = re.compile(r"-[A-Za-z0-9]{2,20}$")
+_SEQUEL_RE = re.compile(r"^(?:[2-9]|ii|iii|iv|vi|vii|viii|vol|volume|chapter|part|cast|dil|kapitola)$")
+
+
+def movie_title_prefix(display: str, year: int, titles, name: str) -> str:
+    """"<TMDB title> <year> - " to put in front of a movie release title, or "".
+
+    Radarr maps a release by its title; a Czech-only name ("Asterix a Obelix I.",
+    "Hotel.Transylvania.1(2012)", "Coco.mkv") doesn't parse, and a release it
+    could only map by the echoed tmdbid/imdb is **blocked from automatic import**
+    ("matched to movie by ID, Manual Import required"). The canonical title and
+    year in front let Radarr map and import it by itself.
+
+    Nothing is added when the name already starts with "<title> <year>", when the
+    title's year is unknown, or when what follows the matched title hints at
+    another film: a sequel marker (2, II, Vol., část…) or two or more words that
+    are neither tags, genres nor the film's other names (e.g. a cast list) — those
+    stay for Radarr's own parser and, at worst, a manual import.
+    """
+    if not display or not year:
+        return ""
+    stem = name.rsplit(".", 1)[0] if _is_video(name) else name
+    # a trailing "-Group" is the uploader, not part of the title ("… DABING-Buliwyf")
+    stem = _RELEASE_GROUP_RE.sub("", stem)
+    ntoks = normalize_text(stem).split()
+    dtoks = normalize_text(display).split()
+    if ntoks[:len(dtoks)] == dtoks and ntoks[len(dtoks):len(dtoks) + 1] == [str(year)]:
+        return ""
+    known = sorted({tuple(normalize_text(t).split()) for t in _as_titles(titles) if t} | {tuple(dtoks)},
+                   key=len, reverse=True)
+    rest = next((ntoks[len(k):] for k in known if k and tuple(ntoks[:len(k)]) == k), None)
+    if rest is None:
+        return ""
+    text = " " + " ".join(rest) + " "
+    for k in known:  # "When Marnie Was There - Leto s Marnie": two names of one film
+        if k:
+            text = text.replace(" " + " ".join(k) + " ", " ")
+    rest = [t for t in text.split() if len(t) > 1 or t.isdigit()]
+    audio = len(rest) > 1 and rest[0] in ("2", "5", "7") and rest[1] in ("0", "1")  # "5.1"
+    if rest and _SEQUEL_RE.match(rest[0]) and not audio:
+        return ""
+    foreign = [t for t in rest if t.isalpha() and t not in _MOVIE_TAIL_WORDS]
+    if len(foreign) >= 2:
+        return ""
+    return f"{display} {year} - "
+
+
 def year_conflict(name: str, year: int) -> bool:
     """True when every year token in the file name contradicts the title's year.
 
@@ -425,6 +737,18 @@ def matches_query(query, name: str) -> bool:
     return False
 
 
+# Words that may stand between a show title and a bare episode number.
+_EP_WORDS = frozenset({"dil", "cast", "epizoda", "epizody", "ep", "e", "episode"})
+# Words that may stand between a show title and its SxxEyy marker without making
+# it a different show: season words, language/dub markers and technical tags.
+_NEUTRAL_WORDS = frozenset("""
+season seasons series serie serial seria sezona sezony rada rady rocnik dil cast epizoda episode ep
+cz sk en eng cze czech slovak cesky slovensky dab dabing dabovano dub dubbed titulky tit sub subs
+multi dual audio complete kompletni hd fhd uhd full web webdl webrip dl bluray bdrip brrip hdtv
+tvrip dvdrip remux hevc avc aac ac3 eac3 dts dd ddp atmos truehd hdr dv mkv avi mp4 the and
+""".split())
+
+
 def file_marker(query, name: str) -> tuple[int | None, int | None]:
     """(season, episode) implied by the file name, read from the first marker
     after the (matched) show title: SxxEyy, 1x05, or a bare "05" (no season).
@@ -434,22 +758,49 @@ def file_marker(query, name: str) -> tuple[int | None, int | None]:
     (matched on the show name alone). The caller must check both numbers: an
     episode-only match let season-2 files impersonate season 1, and the
     release-name rewrite then hid the real season from *arr entirely.
+
+    A bare number only counts when it follows the title directly — at most
+    behind a year or an episode word ("dil", "epizoda"). Scanning the whole name
+    read the "1" of a "DDP5.1" audio tag as episode 1, so a "Blue" alias turned
+    "Blue Planet II One Ocean ... DDP5.1" into "Bluey S01E01". SxxEyy/1x05 are
+    unambiguous and still count anywhere.
+
+    Any other word between the title and an SxxEyy marker means another show
+    that merely starts with the same word: a TMDB Czech title "Blue" (Bluey)
+    matched "Blue Planet II S01E01", "Blue Thunder S01E01", "Blue Lights
+    S01E01", and the rewrite released them as Bluey. Season/language/technical
+    words and the title's other names are allowed (`_NEUTRAL_WORDS`), and so is
+    anything before a "special" marker (special episodes carry their own name).
     """
     ntoks = normalize_text(name).split()
-    for title in _as_titles(query):
+    titles = _as_titles(query)
+    for title in titles:
         series = _series_tokens(title)
         if series and ntoks[:len(series)] != series:
             continue  # this title isn't the one the file starts with
+        other = {t for x in titles for t in _series_tokens(x)}
         is_special = False
+        bare_ok = True  # still right behind the title (years/episode words only)
+        foreign = False  # a word that can't belong to this show's episode name
         for tk in ntoks[len(series):]:
             if tk in ("special", "specials"):
                 is_special = True
+                bare_ok = True  # "... special 06": the number right after it is the special's
                 continue
             m = re.match(r"^s(\d{1,2})e(\d{1,3})$", tk) or re.match(r"^(\d{1,2})x(\d{1,3})$", tk)
             if m:
+                if foreign and not is_special:
+                    return None, None  # "Blue Planet II S01E01" is not "Blue" S01E01
                 return int(m.group(1)), int(m.group(2))
-            if tk.isdigit() and len(tk) <= 2:  # bare episode number (skip years/1080)
-                return (0 if is_special else None), int(tk)
+            if tk.isdigit() and len(tk) <= 2:
+                if bare_ok:
+                    return (0 if is_special else None), int(tk)
+                continue
+            if tk.isalpha() and len(tk) > 1 and tk not in _NEUTRAL_WORDS and tk not in other:
+                foreign = True
+            if tk in _EP_WORDS or (tk.isdigit() and len(tk) == 4 and 1900 <= int(tk) <= 2099):
+                continue
+            bare_ok = False  # any other word: later bare numbers are tech tokens
         break
     return None, None
 
@@ -468,6 +819,50 @@ def relevance(queries: list[str], name: str) -> float:
         if qt:
             best = max(best, sum(1 for t in qt if t in ntoks) / len(qt))
     return best
+
+
+# Files at least this big with the same byte size and extension are treated as
+# the same upload (see group_duplicates).
+_DUP_MIN_SIZE = 50 * 1024 * 1024
+_MAX_ALTERNATES = 5
+
+
+def group_duplicates(results: list[SearchResult], episodes: dict[str, int] | None = None
+                     ) -> tuple[list[SearchResult], dict[str, list[str]], dict[str, int]]:
+    """Merge re-uploads of the same file into one release.
+
+    Webshare hosts the same file many times under different idents, often with
+    different names, so *arr listed one movie five times and failed a grab whose
+    link was dead although an identical copy was right there. Two different
+    encodes with the exact same byte size are practically impossible, so a size
+    + extension match (from 50 MB up) is one file. Season searches only merge
+    within the same episode.
+
+    Returns (kept, alternates, grabs): one representative per group in
+    first-seen order, up to five other idents per representative for the
+    download client to fall back to, and the group's summed positive votes.
+    The representative is picked by what never changes between searches — the
+    richer name, then the smallest ident — not by votes: its ident fixes the
+    guid and publish date (see _pub_date), and a representative that moved
+    with the votes would bring a blocklisted release back under a new ident.
+    """
+    episodes = episodes or {}
+    groups: dict[tuple, list[SearchResult]] = {}
+    for r in results:
+        ext = r.name.rsplit(".", 1)[-1].lower() if "." in r.name else ""
+        key = (r.size, ext, episodes.get(r.ident)) if r.size >= _DUP_MIN_SIZE else (r.ident,)
+        groups.setdefault(key, []).append(r)  # dicts keep first-seen order
+
+    kept: list[SearchResult] = []
+    alternates: dict[str, list[str]] = {}
+    grabs: dict[str, int] = {}
+    for group in groups.values():
+        rep = min(group, key=lambda r: (-len(normalize_text(r.name).split()), r.ident))
+        kept.append(rep)
+        if len(group) > 1:
+            alternates[rep.ident] = [r.ident for r in group if r is not rep][:_MAX_ALTERNATES]
+            grabs[rep.ident] = sum(r.positive_votes for r in group)
+    return kept, alternates, grabs
 
 
 # Window the synthetic publish dates fall into (see _pub_date).
@@ -493,10 +888,18 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
                  *, query: str | None = None, season: str | None = None,
                  ep: str | None = None, episodes: dict[str, int] | None = None,
                  heights: dict[str, int] | None = None, audio: dict[str, str] | None = None,
-                 language: str = "", czech_titles: list[str] | None = None) -> Response:
+                 language: str = "", czech_titles: list[str] | None = None,
+                 infos: dict[str, dict] | None = None, ids: dict | None = None,
+                 titles: list[str] | None = None, year: int = 0,
+                 alternates: dict[str, list[str]] | None = None,
+                 grabs: dict[str, int] | None = None) -> Response:
     heights = heights or {}
+    infos = infos or {}
+    ids = {k: v for k, v in (ids or {}).items() if v}
     audio = audio or {}
     episodes = episodes or {}
+    alternates = alternates or {}
+    grabs = grabs or {}
     ET.register_namespace("torznab", TORZNAB_NS)
     ET.register_namespace("newznab", NEWZNAB_NS)
     rss = ET.Element("rss", {"version": "2.0"})
@@ -511,6 +914,10 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
         title = release_title(query, season, episodes.get(r.ident, ep), r.name) \
             if query is not None else \
             (r.name.rsplit(".", 1)[0] if "." in r.name else r.name)
+        if category == CAT_MOVIES and query:
+            prefix = movie_title_prefix(query, year, titles or [], r.name)
+            if prefix:
+                title = f"{_asciify(prefix).strip()} {title}"
         # Label quality from the real video height when the name lacks one,
         # so *arr doesn't reject the release as "Unknown" quality.
         if not _RES_RE.search(title) and heights.get(r.ident):
@@ -519,11 +926,23 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
         # by being named after the Czech title ("Cerveny trpaslik ...") — gets the
         # marker added, so title-based custom formats ("CZ" in release title)
         # see it too.
-        inferred = "" if dub_language(r.name) else audio.get(r.ident) or \
-            ("Czech" if czech_titles and matches_query(czech_titles, r.name) else "")
+        info = infos.get(r.ident, {})
+        tagged = track_languages(info.get("audio_languages"))
+        # A Czech-title match is only a hint: when the tracks are tagged and none
+        # of them is CZ/SK, the file is not a dub (an English file named in Czech).
+        by_title = "Czech" if czech_titles and matches_query(czech_titles, r.name) and \
+            (not tagged or {"Czech", "Slovak"} & set(tagged)) else ""
+        inferred = "" if dub_language(r.name) else audio.get(r.ident) or by_title
         marker, marker_re = ("SK", _SK_RE) if inferred == "Slovak" else ("CZ", _CZ_RE)
         if inferred and not marker_re.search(title):
             title = f"{title} {marker}"
+        # The audio token describes the CZ/SK track whenever the file has one
+        # (tagged or claimed): that's the track a CZ profile cares about.
+        title, extra = quality_tokens(title, r.size, info, czech=bool(
+            dub_language(r.name) or inferred or {"Czech", "Slovak"} & set(tagged)),
+            tags=settings.release_tags)
+        if extra:
+            title = f"{title} {' '.join(extra)}"
         ET.SubElement(item, "title").text = title
         ET.SubElement(item, "guid", {"isPermaLink": "false"}).text = f"websharr-{r.ident}"
         # The saved file keeps the raw filename; the folder/title (nzbname) carries
@@ -535,6 +954,10 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
             f"&name={urllib.parse.quote(_asciify(r.name))}&size={r.size}"
             f"&nzbname={urllib.parse.quote(title)}"
         )
+        # Identical copies ride along so the download client can fall back to
+        # one when this file's link is dead (see group_duplicates).
+        if alternates.get(r.ident):
+            link += f"&alt={urllib.parse.quote(','.join(alternates[r.ident]))}"
         ET.SubElement(item, "link").text = link
         ET.SubElement(item, "pubDate").text = _pub_date(r.ident)
         ET.SubElement(item, "size").text = str(r.size)
@@ -548,17 +971,29 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
         # policy grabs the original audio and skips the dub. A file named after
         # the Czech dub title ("Kačeří příběhy ...") is a Czech release even
         # when it carries no "dabing" marker.
-        item_lang = dub_language(r.name) or inferred or language
+        claimed = dub_language(r.name) or inferred
+        if tagged:
+            # every tagged track language; a name-claimed dub the tags don't show
+            # stays in (tags are often missing or rewritten) — "CZunverified" marks it
+            item_langs = ([claimed] if claimed and claimed not in tagged else []) + tagged
+        else:
+            item_langs = [claimed or language] if (claimed or language) else []
+        item_lang = ", ".join(item_langs)
         # Emit attrs in both namespaces so the feed parses whether Sonarr/Radarr
         # treats it as Newznab (usenet — the correct choice) or Torznab.
         for ns in (NEWZNAB_NS, TORZNAB_NS):
             ET.SubElement(item, "{%s}attr" % ns, {"name": "category", "value": category})
             ET.SubElement(item, "{%s}attr" % ns, {"name": "size", "value": str(r.size)})
             ET.SubElement(item, "{%s}attr" % ns,
-                          {"name": "grabs", "value": str(r.positive_votes)})
+                          {"name": "grabs", "value": str(grabs.get(r.ident, r.positive_votes))})
             if item_lang:
                 ET.SubElement(item, "{%s}attr" % ns,
                               {"name": "language", "value": item_lang})
+            # Echo the ids the search came with: *arr maps a Czech-only file name
+            # to the right movie/series by id even when the title doesn't parse.
+            for key, attr in (("tmdbid", "tmdbid"), ("imdbid", "imdb"), ("tvdbid", "tvdbid")):
+                if ids.get(key):
+                    ET.SubElement(item, "{%s}attr" % ns, {"name": attr, "value": str(ids[key])})
 
     return _xml_response(rss)
 
@@ -621,6 +1056,8 @@ async def torznab_api(request: Request):
         for r in results:
             if r.ident in seen or r.password or not _is_video(r.name):
                 continue
+            if junk_reason(r.name, movie=(t == "movie")):
+                continue  # CAM/trailer/3D, or an episode in a movie search
             if not matches_query(titles, r.name):
                 continue  # drop Webshare's loose non-matching fulltext hits
             if year_conflict(r.name, year):
@@ -642,13 +1079,43 @@ async def torznab_api(request: Request):
             seen.add(r.ident)
             merged.append(r)
 
+    found = len(merged)
+    merged, alternates, grabs = group_duplicates(merged, episodes)
+    if found > len(merged):
+        logger.info("Merged %d duplicate uploads into %d releases", found - len(merged), len(alternates))
     merged.sort(key=lambda r: (-relevance(queries, r.name), -r.size))
     logger.info("Newznab %s q=%r -> %d results", t, q, len(merged))
-    shown = merged[:limit]
-    heights, audio = await _probe(client, shown)
+    # With an exact id, TMDB knows how long the title runs; files far off that
+    # are another title that shares the name, a special or an excerpt.
+    minutes = 0
+    kind = "tv" if t == "tvsearch" else "movie"
+    if settings.tmdb_token and t in ("tvsearch", "movie") and (
+            params.get("tmdbid") or params.get("imdbid") or params.get("tvdbid")):
+        minutes = await tmdb_runtime(settings.tmdb_token, kind, params.get("tmdbid"),
+                                     params.get("imdbid"), params.get("tvdbid"),
+                                     season if t == "tvsearch" else None,
+                                     ep if t == "tvsearch" else None)
+    # Check a few more than asked for, so dropped files don't leave *arr with
+    # fewer results than the limit when more good ones exist.
+    shown = merged[:limit * 2] if minutes else merged[:limit]
+    # file_info is cheap and cached: probe every shown file, the measured
+    # resolution/codec/audio feed the release title and language attrs.
+    heights, audio, lengths, infos = await _probe(client, shown, all_files=True)
+    shown = [r for r in shown if not is_torso(r.size, lengths.get(r.ident, 0))]
+    if minutes:
+        kept = []
+        for r in shown:
+            if runtime_mismatch(lengths.get(r.ident, 0), minutes, kind):
+                logger.info("Dropped %r: %d min, expected ~%d min",
+                            r.name, lengths[r.ident] // 60, minutes)
+                continue
+            kept.append(r)
+        shown = kept[:limit]
     return _render_feed(request, shown, category, heights=heights, audio=audio,
                         query=display, season=(season if t == "tvsearch" else None), ep=ep,
-                        episodes=episodes, language=language, czech_titles=czech_titles)
+                        episodes=episodes, language=language, czech_titles=czech_titles,
+                        infos=infos, ids={k: params.get(k) for k in ("tmdbid", "imdbid", "tvdbid")},
+                        titles=titles, year=year, alternates=alternates, grabs=grabs)
 
 
 @router.get("/torznab/nzb/{ident}")
@@ -663,8 +1130,9 @@ async def torznab_nzb(ident: str, request: Request):
         size = int(request.query_params.get("size", "0"))
     except ValueError:
         size = 0
+    alternates = [a for a in request.query_params.get("alt", "").split(",") if a]
 
-    content = build_nzb(ident, name, size)
+    content = build_nzb(ident, name, size, alternates)
     # Name the NZB after the parseable release title (nzbname) when present:
     # Sonarr re-uploads it to the SABnzbd client using this filename as the job
     # name, so the download folder carries SxxEyy for import.

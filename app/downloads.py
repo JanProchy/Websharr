@@ -60,6 +60,10 @@ class Job:
     # we honor that for the SABnzbd view but keep the record in the Websharr UI
     # history. This flag hides it from Sonarr only.
     sab_hidden: bool = False
+    # Idents of identical copies (same size, see torznab.group_duplicates) to
+    # download from when this ident's link is dead. After a switch `ident` is
+    # the copy in use and the original moves here. Absent in older state files.
+    alternates: list[str] = field(default_factory=list)
 
     @property
     def job_name(self) -> str:
@@ -71,7 +75,8 @@ class Job:
 
 class DownloadManager:
     def __init__(self, client: WebshareClient, complete_dir: Path, incomplete_dir: Path,
-                 state_file: Path, max_concurrent: int = 2, notify=None):
+                 state_file: Path, max_concurrent: int = 2, notify=None,
+                 categories: list[str] | None = None):
         self._client = client
         self._complete_dir = complete_dir
         self._incomplete_dir = incomplete_dir
@@ -81,6 +86,9 @@ class DownloadManager:
         self._tasks: dict[str, asyncio.Task] = {}
         # Optional async callback (title, body) for failure notifications.
         self._notify = notify
+        # Configured SABnzbd categories (without "*"), reported to *arr.
+        self._categories = list(categories) if categories is not None else ["tv", "movies"]
+        self._warned_categories: set[str] = set()
 
     @property
     def max_concurrent(self) -> int:
@@ -94,12 +102,22 @@ class DownloadManager:
         self._schedule()
         return self._max_concurrent
 
+    @property
+    def categories(self) -> list[str]:
+        return list(self._categories)
+
+    def set_categories(self, categories: list[str]) -> list[str]:
+        """Replace the category list at runtime and create the new folders."""
+        self._categories = list(categories)
+        self.ensure_dirs()
+        return self.categories
+
     def ensure_dirs(self) -> None:
         """Pre-create the category folders so *arr's download-client health
         check ("directory does not exist inside the container") passes before
         the first download of that category completes."""
         self._incomplete_dir.mkdir(parents=True, exist_ok=True)
-        for category in ("tv", "movies"):
+        for category in self._categories:
             (self._complete_dir / category).mkdir(parents=True, exist_ok=True)
 
     # -- persistence -------------------------------------------------------
@@ -139,7 +157,15 @@ class DownloadManager:
 
     # -- public API --------------------------------------------------------
 
-    def add(self, ident: str, name: str, size: int, category: str, title: str = "") -> Job:
+    def add(self, ident: str, name: str, size: int, category: str, title: str = "",
+            alternates: list[str] | None = None) -> Job:
+        # An unconfigured category still downloads (into complete/<cat>): rejecting
+        # it would make *arr mark the release failed and blocklist it.
+        if (category and category != "*" and category not in self._categories
+                and category not in self._warned_categories):
+            self._warned_categories.add(category)
+            logger.warning("Category '%s' is not configured in Settings; downloading into %s anyway",
+                           category, self._complete_dir / category)
         job = Job(
             nzo_id=f"SABnzbd_nzo_{uuid.uuid4().hex[:12]}",
             ident=ident,
@@ -147,6 +173,7 @@ class DownloadManager:
             category=category or "*",
             size=size,
             title=sanitize_filename(title) if title else "",
+            alternates=[a for a in alternates or [] if a != ident],
         )
         self._jobs[job.nzo_id] = job
         self._save_state()
@@ -329,16 +356,24 @@ class DownloadManager:
             self.delete(job.nzo_id)
 
     async def _download(self, job: Job) -> None:
-        # No retry on a link error: Webshare's "File temporarily unavailable" does
-        # not recover in practice. Failing right away frees the slot and lets *arr
-        # blocklist the release (see torznab._pub_date) and grab another one.
-        url = await self._client.file_link(job.ident)
-
         work_dir = self._incomplete_path(job)
-        work_dir.mkdir(parents=True, exist_ok=True)
         target = work_dir / job.name
-
         offset = target.stat().st_size if target.exists() else 0
+
+        # No retry of the same link: Webshare's "File temporarily unavailable"
+        # does not recover in practice. An identical copy is tried instead, but
+        # only before any byte is on disk — resuming from a different upload is
+        # not guaranteed safe. Without one, failing right away frees the slot
+        # and lets *arr blocklist the release (see torznab._pub_date) and grab
+        # another one.
+        try:
+            url = await self._client.file_link(job.ident)
+        except WebshareError as exc:
+            if offset or not job.alternates:
+                raise
+            url = await self._copy_link(job, exc)
+
+        work_dir.mkdir(parents=True, exist_ok=True)
 
         async with httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(30.0, read=120.0)) as http:
             while True:
@@ -366,6 +401,22 @@ class DownloadManager:
         shutil.rmtree(work_dir, ignore_errors=True)
         job.storage = str(final_dir)
         job.size = max(job.size, job.downloaded)
+
+    async def _copy_link(self, job: Job, exc: WebshareError) -> str:
+        """Link of the first identical copy that has one; the job switches to
+        it for good (persisted, so a restart resumes the same upload)."""
+        for alt in job.alternates:
+            try:
+                url = await self._client.file_link(alt)
+            except WebshareError:
+                continue
+            logger.info("Link of %s dead (%s), downloading identical copy %s",
+                        job.ident, exc, alt)
+            job.alternates = [a for a in (job.ident, *job.alternates) if a != alt]
+            job.ident = alt
+            self._save_state()
+            return url
+        raise WebshareError(f"{exc} ({len(job.alternates) + 1} copies tried)") from exc
 
     @staticmethod
     async def _stream_to_file(job: Job, resp: httpx.Response, target: Path, offset: int) -> None:

@@ -20,7 +20,8 @@ class FakeWebshareClient:
 
     fail_login = False  # class-level so tests can flip it for new instances
 
-    def __init__(self, username: str = "", password: str = "", password_digest: str = ""):
+    def __init__(self, username: str = "", password: str = "", password_digest: str = "",
+                 search_cache_ttl: float = 0):
         self.username = username
         self.password = password
         self.password_digest = password_digest
@@ -57,9 +58,10 @@ class FakeWebshareClient:
         return self.file_link_url
 
     async def file_info(self, ident: str) -> dict:
-        return self.file_infos.get(ident, {
-            "length": 3600, "width": 1920, "height": 1080, "format": "H264", "type": "mkv",
-        })
+        # Default: only a resolution. Duration/codec/audio drive the measured
+        # quality rules (torso, bitrate, codec/audio tokens), which tests opt in
+        # to by setting file_infos explicitly — the canned sizes here are tiny.
+        return self.file_infos.get(ident, {"width": 1920, "height": 1080, "type": "mkv"})
 
     async def close(self):
         pass
@@ -90,3 +92,23 @@ def wait_for(predicate, timeout: float = 5.0) -> bool:
             return True
         time.sleep(0.05)
     return False
+
+
+@pytest.fixture(autouse=True)
+def _no_tmdb_runtime(monkeypatch):
+    """Tests never reach TMDB for runtimes; the runtime check stays off unless a
+    test patches `tmdb_runtime` itself."""
+    import app.torznab as torznab
+
+    async def none(*args, **kwargs):
+        return 0
+
+    monkeypatch.setattr(torznab, "tmdb_runtime", none)
+
+def _fresh_probe_state(monkeypatch):
+    """The file_info cache and limiter are process-wide; start every test clean
+    and without real back-off sleeps."""
+    import app.torznab as torznab
+    torznab._probe_cache.clear()
+    monkeypatch.setattr(torznab, "_probe_sem", None)
+    monkeypatch.setattr(torznab, "_PROBE_RETRIES", (0, 0, 0))

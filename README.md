@@ -84,6 +84,10 @@ as torrent and its grabs would be sent to a torrent client instead.
 | API Key | copy from Websharr → Settings |
 | Category | `tv` (Sonarr) / `movies` (Radarr) |
 
+Running a second Sonarr/Radarr instance (e.g. a kids library)? Give it its own
+category — add it under Websharr → Settings → Downloads (or `CATEGORIES`) and it
+downloads into its own `<complete>/<category>` folder.
+
 Host names like `websharr` work when everything shares a Docker network; otherwise
 use the LAN IP and port. Also works through **Prowlarr** — add it there as a
 **Generic Newznab** indexer (same URL/API path/key) and let Prowlarr sync it to
@@ -128,8 +132,83 @@ looking the request up in **TMDB**:
 The token is optional — without it, aliases still work and everything else runs
 as normal; you just lose the automatic Czech-title resolution.
 
+With the token, ID-based searches (what Sonarr/Radarr send via Prowlarr) also
+**check each file's duration** against the TMDB runtime of the movie or episode
+and drop files far off it — an hour-long documentary that happens to start with
+a short show's Czech name, a 20-minute special named like the feature, a
+5-minute excerpt. Extended cuts (up to 1.6×) and double episodes (up to 2.6×)
+still pass; files of unknown length are kept.
+
+## Measured quality
+
+Webshare's `file_info` is a media probe, so Websharr measures every shown file
+(cached, with a process-wide limit and retry — Webshare answers 403 to bursts)
+and writes what it measured into the release title, in tokens Sonarr/Radarr's
+parser and custom formats already understand:
+
+- **Resolution** — a claim that measures lower (`4K`/`UHD`/`2160p`, or a `1080p`
+  with 720p inside) is replaced by the real height; 4:3 (1440×1080) and cropped
+  widescreen (1920×800) still count as 1080p.
+- **Codec** `x264`/`x265` and the **best audio track** (`DDP5.1`, `DD5.1`,
+  `DTS-HD MA 7.1`, `TrueHD 7.1`, `AAC2.0`…; the CZ/SK track when the file has
+  one) — only when the name carries none; the uploader's own tags win.
+- **`Upscaled`** for 2160p below ~30 MB/min (TRaSH's `Upscaled` custom format
+  already scores it).
+- The `language` attribute lists **every tagged audio language**
+  (`Czech, English` for a dual-audio file), and the `tmdbid`/`imdb`/`tvdbid` of
+  the search are echoed so a Czech-only file name still maps to the right title.
+- Stubs under 3 MB/min are dropped.
+- **Movie titles Radarr can map:** a Czech-only file name Radarr can't parse
+  (`Asterix a Obelix I. (1999)`, `Coco.mkv`) gets `<TMDB title> <year> - ` in
+  front, so Radarr maps it by title and imports it by itself (a release it can
+  only map by the echoed id is blocked from automatic import). Not when the name
+  already starts with title + year, nor when what follows the title hints at
+  another film (a sequel marker, or several words that aren't tags, genres or the
+  film's other names — e.g. a cast list).
+
+HDR/DV, bit depth, subtitles and the source (WEB/BluRay) are not in the probe
+and are never invented.
+
+### Release tags (optional)
+
+With **Settings → Release tags** (or `RELEASE_TAGS=1`) Websharr adds its own
+tags too. They mean nothing to Sonarr/Radarr on their own — they are for custom
+formats you score in your profiles:
+
+| Tag | Meaning | Suggested score |
+|---|---|---|
+| `CZaudio` / `SKaudio` | an audio track is tagged Czech / Slovak — a verified dub | + (e.g. 500 / 300) |
+| `CZunverified` | the name claims a dub, but the tagged tracks don't show it (tags are sometimes rewritten, so not a hard reject) | − (e.g. −1000) |
+| `LowBitrate` | 1080p below 20 MB/min (x264) / 14 (HEVC), 720p below 12 / 8 — a starved encode | − (e.g. −500) |
+
+A custom format to import (Settings → Custom Formats → Import), one per tag:
+
+```json
+{
+  "name": "Websharr: CZ audio",
+  "includeCustomFormatWhenRenaming": false,
+  "specifications": [
+    {
+      "name": "CZaudio",
+      "implementation": "ReleaseTitleSpecification",
+      "negate": false,
+      "required": true,
+      "fields": { "value": "\\bCZaudio\\b" }
+    }
+  ]
+}
+```
+
 ## Monitoring and notifications
 
+- **Health check.** `GET /health` (no API key) returns `200` when the download
+  folders are writable and the Webshare account is logged in with an active VIP,
+  and `503` with a short reason per check otherwise — the image's Docker
+  `HEALTHCHECK` and Uptime Kuma can use it as is. It reads the account status the
+  app already refreshes hourly, so polling it never calls Webshare; right after
+  start the Webshare check reports `pending` until the first refresh finishes.
+- **Free disk space.** The SABnzbd `fullstatus` call reports real free/total
+  space of the download folders, so Sonarr/Radarr can warn when they fill up.
 - **Dashboard widget.** `GET /stats?apikey=…` returns compact JSON (active/queued
   counts, speed, failed count, Webshare VIP days) for a Homepage `customapi`
   widget or similar.
@@ -155,7 +234,14 @@ as normal; you just lose the automatic Czech-title resolution.
 | `INCOMPLETE_DIR` | `/downloads/incomplete` | in-progress files |
 | `STATE_FILE` | `/config/state.json` | queue/history persistence |
 | `MAX_CONCURRENT_DOWNLOADS` | `2` | concurrent downloads |
+| `CATEGORIES` | `tv,movies` | SABnzbd categories offered to *arr, each with its own `COMPLETE_DIR/<cat>` folder (UI value wins) |
 | `SEARCH_LIMIT` | `60` | max results from Webshare per query |
+| `SEARCH_CACHE_TTL` | `600` | seconds an identical Webshare search is answered from memory; `0` disables |
+| `RELEASE_TAGS` | off | add Websharr's own release tags (`CZaudio`, `CZunverified`, `LowBitrate`…); also in Settings |
+
+Sonarr and Radarr repeat the same searches (per episode, per season, on retry),
+so Websharr answers an identical Webshare search from memory for
+`SEARCH_CACHE_TTL` seconds — faster, and kinder to Webshare's rate limits.
 
 ## How search results are cleaned up
 
@@ -171,6 +257,15 @@ are noisy. For a TV query Websharr:
 
 Even so, because matching is filename-based, the occasional odd result slips
 through — use Interactive Search / the UI when it does.
+
+The same file is often uploaded to Webshare several times under different names.
+Files of 50 MB and more with exactly the same size and extension are merged into
+one release, and up to five identical copies ride
+along with the grab: when the chosen file's link is dead ("File temporarily
+unavailable"), Websharr downloads an identical copy instead of failing. It never
+switches copies once part of the file is on disk. The copy shown is picked by
+name and ident, never by votes, so the release keeps the same guid and publish
+date across searches and a blocklisted one stays blocklisted.
 
 ## Limitations
 

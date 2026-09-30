@@ -7,6 +7,8 @@ history (list/delete), retry, addfile, addurl.
 
 import logging
 import re
+import shutil
+import time
 import urllib.parse
 
 from fastapi import APIRouter, Request
@@ -21,6 +23,7 @@ logger = logging.getLogger("websharr.sabnzbd")
 router = APIRouter()
 
 SAB_VERSION = "4.3.3"
+STARTED = time.time()
 
 
 def _err(message: str, status_code: int = 200) -> JSONResponse:
@@ -29,6 +32,24 @@ def _err(message: str, status_code: int = 200) -> JSONResponse:
 
 def _fmt_mb(num_bytes: float) -> str:
     return f"{num_bytes / (1024 * 1024):.2f}"
+
+
+def _disk_gb(path) -> tuple[str, str]:
+    """(free, total) in GB with 2 decimals, as SABnzbd reports diskspace."""
+    try:
+        usage = shutil.disk_usage(path)
+    except OSError:
+        return "0.00", "0.00"
+    return f"{usage.free / 1024 ** 3:.2f}", f"{usage.total / 1024 ** 3:.2f}"
+
+
+def _fmt_uptime(secs: float) -> str:
+    secs = int(secs)
+    if secs >= 86400:
+        return f"{secs // 86400}d"
+    if secs >= 3600:
+        return f"{secs // 3600}h"
+    return f"{secs // 60}m"
 
 
 def _fmt_timeleft(job: Job) -> str:
@@ -76,7 +97,7 @@ def _history_slot(job: Job) -> dict:
     }
 
 
-def _get_config_payload() -> dict:
+def _get_config_payload(categories: list[str]) -> dict:
     return {
         "config": {
             "misc": {
@@ -95,8 +116,9 @@ def _get_config_payload() -> dict:
             },
             "categories": [
                 {"name": "*", "pp": "3", "script": "None", "dir": "", "priority": 0},
-                {"name": "tv", "pp": "3", "script": "None", "dir": "tv", "priority": 0},
-                {"name": "movies", "pp": "3", "script": "None", "dir": "movies", "priority": 0},
+            ] + [
+                {"name": cat, "pp": "3", "script": "None", "dir": cat, "priority": 0}
+                for cat in categories
             ],
             "servers": [{"name": "websharr", "host": "webshare.cz", "connections": 4}],
             "sorters": [],
@@ -104,11 +126,15 @@ def _get_config_payload() -> dict:
     }
 
 
-async def _extract_nzb_payload(request: Request, params) -> tuple[str, str, int, str] | None:
-    """Return (ident, name, size, title) from an addfile upload or addurl link.
+async def _extract_nzb_payload(request: Request, params
+                               ) -> tuple[str, str, int, str, list[str]] | None:
+    """Return (ident, name, size, title, alternates) from an addfile upload or
+    addurl link.
 
     `title` is the *arr release name (with SxxEyy) used for the job folder:
     addurl carries it as nzbname; addfile puts it in the uploaded file's name.
+    `alternates` are idents of identical copies (the link's `alt`, the NZB's
+    websharr_alt), tried when the file's own link is dead.
     """
     mode = params.get("mode")
     if mode == "addurl":
@@ -124,7 +150,8 @@ async def _extract_nzb_payload(request: Request, params) -> tuple[str, str, int,
         except ValueError:
             size = 0
         title = (params.get("nzbname") or qs.get("nzbname", [""])[0] or "").strip()
-        return m.group(1), name, size, title
+        alternates = [a for a in qs.get("alt", [""])[0].split(",") if a]
+        return m.group(1), name, size, title, alternates
 
     form = await request.form()
     for key in ("nzbfile", "name"):
@@ -135,7 +162,7 @@ async def _extract_nzb_payload(request: Request, params) -> tuple[str, str, int,
                 fname = getattr(upload, "filename", "") or ""
                 title = re.sub(r"\.nzb$", "", fname, flags=re.IGNORECASE).strip()
                 title = title or (params.get("nzbname") or "").strip()
-                return payload.ident, payload.name, payload.size, title
+                return payload.ident, payload.name, payload.size, title, payload.alternates
     return None
 
 
@@ -163,14 +190,21 @@ async def sabnzbd_api(request: Request):
         return JSONResponse({"version": SAB_VERSION})
 
     if mode == "get_config":
-        return JSONResponse(_get_config_payload())
+        return JSONResponse(_get_config_payload(manager.categories))
 
     if mode == "get_cats":
-        return JSONResponse({"categories": ["*", "tv", "movies"]})
+        return JSONResponse({"categories": ["*", *manager.categories]})
 
     if mode == "fullstatus":
-        return JSONResponse({"status": {"version": SAB_VERSION, "uptime": "1h",
-                                        "diskspace1": "1000.0", "diskspace2": "1000.0"}})
+        # Like SABnzbd: 1 = download (incomplete) dir, 2 = complete dir.
+        free1, total1 = _disk_gb(config.incomplete_dir)
+        free2, total2 = _disk_gb(config.complete_dir)
+        return JSONResponse({"status": {
+            "version": SAB_VERSION,
+            "uptime": _fmt_uptime(time.time() - STARTED),
+            "diskspace1": free1, "diskspacetotal1": total1,
+            "diskspace2": free2, "diskspacetotal2": total2,
+        }})
 
     if mode == "queue":
         if params.get("name") == "delete":
@@ -225,11 +259,12 @@ async def sabnzbd_api(request: Request):
         extracted = await _extract_nzb_payload(request, params)
         if extracted is None:
             return _err("Could not extract Webshare ident from NZB")
-        ident, name, size, title = extracted
+        ident, name, size, title, alternates = extracted
         category = params.get("cat", "*")
         # title (the *arr release name, with SxxEyy) becomes the job folder so
         # the importer can parse the episode even from oddly-named files.
-        job = manager.add(ident=ident, name=name, size=size, category=category, title=title)
+        job = manager.add(ident=ident, name=name, size=size, category=category, title=title,
+                          alternates=alternates)
         return JSONResponse({"status": True, "nzo_ids": [job.nzo_id]})
 
     logger.warning("Unhandled SABnzbd mode: %s", mode)

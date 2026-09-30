@@ -435,6 +435,8 @@
     .logline .lv { width: 54px; }
     .logtail { padding: 6px 0; }
     .logtail input[type="checkbox"] { width: 18px; height: 18px; }
+    .scheck { display: flex; align-items: center; gap: 8px; }
+    .scheck input[type="checkbox"] { width: 18px; height: 18px; }
   }
 
   /* settings — two columns: info left, form right; centered column */
@@ -713,7 +715,7 @@
         <tr><td>Port</td><td><code>9797</code></td></tr>
         <tr><td>URL Base</td><td><code>/sabnzbd</code></td></tr>
         <tr><td>API Key</td><td>copy from <b>Settings</b></td></tr>
-        <tr><td>Category</td><td><code>tv</code> (Sonarr) · <code>movies</code> (Radarr)</td></tr>
+        <tr><td>Category</td><td><code>tv</code> (Sonarr) · <code>movies</code> (Radarr) · or your own from <b>Settings</b></td></tr>
       </table>
     </div>
 
@@ -825,10 +827,16 @@
         <p class="shint">How many files download from Webshare at the same time. Extra
           grabs wait in the queue. You can also change this right on the
           <b>Queue</b> page.</p>
+        <p class="shint"><b>Categories</b> are offered to Sonarr/Radarr as SABnzbd
+          categories, each downloading into its own folder — add one per extra
+          *arr instance (e.g. <code>tv-kids</code>).</p>
       </div>
       <div class="sform">
         <label>Max concurrent downloads
           <input id="set-maxdl" type="number" min="1" max="10" step="1"></label>
+        <label>Categories (comma-separated)
+          <input id="set-categories" type="text" autocomplete="off" spellcheck="false"
+            placeholder="tv, movies"></label>
         <div class="srow">
           <div class="spacer"></div>
           <button class="primary" id="set-maxdl-save">Save</button>
@@ -876,6 +884,24 @@
           <button class="primary" id="set-tmdb-save">Save token</button>
         </div>
         <span class="sresult" id="set-tmdb-result"></span>
+      </div>
+    </div>
+
+    <div class="scard">
+      <div class="sinfo">
+        <h3>Release tags</h3>
+        <p class="shint">Websharr measures every file and can add its own tags to the
+          release name: <b>CZaudio</b>/<b>SKaudio</b> (a tagged CZ/SK audio track),
+          <b>CZunverified</b> (named as a dub, but no CZ/SK track) and <b>LowBitrate</b>.
+          They only help with custom formats that score them — see the README.</p>
+      </div>
+      <div class="sform">
+        <label class="scheck"><input id="set-release-tags" type="checkbox"> Add Websharr release tags</label>
+        <div class="srow">
+          <div class="spacer"></div>
+          <button class="primary" id="set-tags-save">Save</button>
+        </div>
+        <span class="sresult" id="set-tags-result"></span>
       </div>
     </div>
 
@@ -1140,8 +1166,10 @@ const App = {
       $("set-dir-complete").value = s.complete_dir;
       $("set-dir-incomplete").value = s.incomplete_dir;
       $("set-maxdl").value = s.max_concurrent || 2;
+      $("set-categories").value = (s.categories || []).join(", ");
       $("set-notify-urls").value = (s.notify_urls || []).join("\n");
       $("set-vip-days").value = s.notify_vip_days ?? 7;
+      $("set-release-tags").checked = !!s.release_tags;
       this.renderVip(s.account);
       $("set-tmdb-token").value = "";
       $("set-tmdb-token").placeholder = s.tmdb_token_set
@@ -1785,7 +1813,7 @@ $("set-maxdl-save").onclick = async () => {
   const n = Math.max(1, Math.min(parseInt($("set-maxdl").value, 10) || 1, 10));
   $("set-maxdl").value = n;
   try {
-    await uiPost("settings", { max_concurrent: n });
+    await uiPost("settings", { max_concurrent: n, categories: $("set-categories").value });
     sresult("set-maxdl-result", true, "✓ Saved");
     App.refresh(true);
   } catch (e) { sresult("set-maxdl-result", false, e.message); }
@@ -1799,6 +1827,12 @@ $("set-notify-save").onclick = async () => {
     });
     sresult("set-notify-result", true, "✓ Saved");
   } catch (e) { sresult("set-notify-result", false, e.message); }
+};
+$("set-tags-save").onclick = async () => {
+  try {
+    await uiPost("settings", { release_tags: $("set-release-tags").checked });
+    sresult("set-tags-result", true, "✓ Saved");
+  } catch (e) { sresult("set-tags-result", false, e.message); }
 };
 $("set-notify-test").onclick = async () => {
   sresult("set-notify-result", true, "Sending…");
