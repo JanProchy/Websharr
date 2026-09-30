@@ -17,6 +17,20 @@ def test_roundtrip_special_chars():
     assert payload.name == 'Divný <film> & "název".mkv'
 
 
+def test_roundtrip_alternates():
+    nzb = build_nzb("main1", "Film.2024.mkv", 4_000_000_000, ["copy2", "copy3"])
+    payload = parse_nzb(nzb.encode())
+    assert payload.ident == "main1"
+    assert payload.alternates == ["copy2", "copy3"]
+
+
+def test_nzb_without_alternates():
+    # NZBs built before alternates existed carry no websharr_alt meta.
+    nzb = build_nzb("main1", "Film.2024.mkv", 1)
+    assert "websharr_alt" not in nzb
+    assert parse_nzb(nzb.encode()).alternates == []
+
+
 def test_parse_garbage():
     assert parse_nzb(b"not xml at all") is None
     assert parse_nzb(b"<nzb></nzb>") is None

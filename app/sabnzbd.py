@@ -126,11 +126,15 @@ def _get_config_payload(categories: list[str]) -> dict:
     }
 
 
-async def _extract_nzb_payload(request: Request, params) -> tuple[str, str, int, str] | None:
-    """Return (ident, name, size, title) from an addfile upload or addurl link.
+async def _extract_nzb_payload(request: Request, params
+                               ) -> tuple[str, str, int, str, list[str]] | None:
+    """Return (ident, name, size, title, alternates) from an addfile upload or
+    addurl link.
 
     `title` is the *arr release name (with SxxEyy) used for the job folder:
     addurl carries it as nzbname; addfile puts it in the uploaded file's name.
+    `alternates` are idents of identical copies (the link's `alt`, the NZB's
+    websharr_alt), tried when the file's own link is dead.
     """
     mode = params.get("mode")
     if mode == "addurl":
@@ -146,7 +150,8 @@ async def _extract_nzb_payload(request: Request, params) -> tuple[str, str, int,
         except ValueError:
             size = 0
         title = (params.get("nzbname") or qs.get("nzbname", [""])[0] or "").strip()
-        return m.group(1), name, size, title
+        alternates = [a for a in qs.get("alt", [""])[0].split(",") if a]
+        return m.group(1), name, size, title, alternates
 
     form = await request.form()
     for key in ("nzbfile", "name"):
@@ -157,7 +162,7 @@ async def _extract_nzb_payload(request: Request, params) -> tuple[str, str, int,
                 fname = getattr(upload, "filename", "") or ""
                 title = re.sub(r"\.nzb$", "", fname, flags=re.IGNORECASE).strip()
                 title = title or (params.get("nzbname") or "").strip()
-                return payload.ident, payload.name, payload.size, title
+                return payload.ident, payload.name, payload.size, title, payload.alternates
     return None
 
 
@@ -254,11 +259,12 @@ async def sabnzbd_api(request: Request):
         extracted = await _extract_nzb_payload(request, params)
         if extracted is None:
             return _err("Could not extract Webshare ident from NZB")
-        ident, name, size, title = extracted
+        ident, name, size, title, alternates = extracted
         category = params.get("cat", "*")
         # title (the *arr release name, with SxxEyy) becomes the job folder so
         # the importer can parse the episode even from oddly-named files.
-        job = manager.add(ident=ident, name=name, size=size, category=category, title=title)
+        job = manager.add(ident=ident, name=name, size=size, category=category, title=title,
+                          alternates=alternates)
         return JSONResponse({"status": True, "nzo_ids": [job.nzo_id]})
 
     logger.warning("Unhandled SABnzbd mode: %s", mode)

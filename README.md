@@ -258,6 +258,15 @@ are noisy. For a TV query Websharr:
 Even so, because matching is filename-based, the occasional odd result slips
 through — use Interactive Search / the UI when it does.
 
+The same file is often uploaded to Webshare several times under different names.
+Files of 50 MB and more with exactly the same size and extension are merged into
+one release, and up to five identical copies ride
+along with the grab: when the chosen file's link is dead ("File temporarily
+unavailable"), Websharr downloads an identical copy instead of failing. It never
+switches copies once part of the file is on disk. The copy shown is picked by
+name and ident, never by votes, so the release keeps the same guid and publish
+date across searches and a blocklisted one stays blocklisted.
+
 ## Limitations
 
 - Webshare searches **by file names only** — no metadata; result quality depends

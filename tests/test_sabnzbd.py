@@ -162,6 +162,29 @@ def test_addurl(client, fake_webshare):
     assert job.name == "Film.2024.mkv"
 
 
+def test_addurl_carries_alternates(client, fake_webshare):
+    url = ("http://websharr:9797/torznab/nzb/idX?apikey=testkey&name=Film.2024.mkv"
+           "&size=1234&alt=idY%2CidZ")
+    body = client.post("/sabnzbd/api", params={
+        "mode": "addurl", "apikey": "testkey", "name": url, "cat": "movies",
+    }).json()
+    job = app.state.downloads.get(body["nzo_ids"][0])
+    assert job.ident == "idX"
+    assert job.alternates == ["idY", "idZ"]
+
+
+def test_addfile_carries_alternates(client, fake_webshare):
+    nzb = build_nzb("idX", "Film.2024.mkv", 1234, ["idY", "idZ"])
+    body = client.post(
+        "/sabnzbd/api",
+        params={"mode": "addfile", "apikey": "testkey", "cat": "movies"},
+        files={"nzbfile": ("Film 2024.nzb", nzb.encode(), "application/x-nzb")},
+    ).json()
+    job = app.state.downloads.get(body["nzo_ids"][0])
+    assert job.ident == "idX"
+    assert job.alternates == ["idY", "idZ"]
+
+
 def test_queue_delete(client, fake_webshare):
     nzb = build_nzb("del1", "ToDelete.mkv", 1000)
     resp = client.post(

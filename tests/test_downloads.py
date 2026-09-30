@@ -225,6 +225,98 @@ def test_temporary_file_link_error_fails_immediately(client, fake_webshare, monk
     assert "temporarily unavailable" in manager.get(nzo_id).error
 
 
+def _dead_links(monkeypatch, dead: set, url: str = "http://127.0.0.1:1/x") -> list:
+    """Make file_link fail for the given idents on every FakeWebshareClient;
+    returns the list of idents asked for, in order."""
+    asked = []
+
+    async def file_link(self, ident: str) -> str:
+        asked.append(ident)
+        if ident in dead:
+            raise WebshareError("Webshare /file_link/ failed: File temporarily unavailable.")
+        return url
+
+    monkeypatch.setattr(FakeWebshareClient, "file_link", file_link)
+    return asked
+
+
+def test_dead_link_falls_back_to_identical_copy(client, fake_webshare, monkeypatch, tmp_path):
+    """The grabbed upload's link is dead but an identical copy (same size, other
+    ident) is fine: download the copy instead of failing and getting the release
+    blocklisted."""
+    httpd, _ = _serve(PAYLOAD, support_range=True)
+    try:
+        url = f"http://127.0.0.1:{httpd.server_address[1]}/f.mkv"
+        asked = _dead_links(monkeypatch, {"dead1", "dead2"}, url)
+        nzb = build_nzb("dead1", FILE_NAME, len(PAYLOAD), ["dead2", "good3", "spare4"])
+        nzo_id = client.post(
+            "/sabnzbd/api",
+            params={"mode": "addfile", "apikey": "testkey", "cat": "movies"},
+            files={"nzbfile": ("Resumed Movie 2024.nzb", nzb.encode(), "application/x-nzb")},
+        ).json()["nzo_ids"][0]
+
+        manager = app.state.downloads
+        assert wait_for(lambda: manager.get(nzo_id).status == "completed")
+        job = manager.get(nzo_id)
+        assert asked == ["dead1", "dead2", "good3"]
+        assert (Path(job.storage) / FILE_NAME).read_bytes() == PAYLOAD
+        # The copy in use is persisted; the original stays on record.
+        assert job.ident == "good3"
+        assert job.alternates == ["dead1", "dead2", "spare4"]
+        saved = json.loads((tmp_path / "state.json").read_text())["jobs"][0]
+        assert saved["ident"] == "good3"
+    finally:
+        httpd.shutdown()
+
+
+def test_all_copies_dead_fails_with_count(client, fake_webshare, monkeypatch):
+    asked = _dead_links(monkeypatch, {"d1", "d2", "d3"})
+    nzb = build_nzb("d1", "Never.Available.mkv", 1000, ["d2", "d3"])
+    nzo_id = client.post(
+        "/sabnzbd/api",
+        params={"mode": "addfile", "apikey": "testkey", "cat": "movies"},
+        files={"nzbfile": ("x.nzb", nzb.encode(), "application/x-nzb")},
+    ).json()["nzo_ids"][0]
+
+    manager = app.state.downloads
+    assert wait_for(lambda: manager.get(nzo_id).status == "failed")
+    job = manager.get(nzo_id)
+    assert asked == ["d1", "d2", "d3"]
+    assert "temporarily unavailable" in job.error
+    assert job.error.endswith("(3 copies tried)")
+    assert job.ident == "d1"
+
+
+def test_no_copy_switch_once_partial_file_exists(tmp_path, monkeypatch):
+    """Bytes from one upload are never resumed with another: with a partial file
+    on disk a dead link fails the job as before, the copies stay untouched."""
+    nzo_id = _seed_interrupted_job(tmp_path, PAYLOAD[:120_000])
+    state = json.loads((tmp_path / "state.json").read_text())
+    state["jobs"][0]["alternates"] = ["copy2"]
+    (tmp_path / "state.json").write_text(json.dumps(state))
+    asked = _dead_links(monkeypatch, {"res1"})
+    with _start_app(tmp_path, monkeypatch, "http://127.0.0.1:1/x"):
+        manager = app.state.downloads
+        assert wait_for(lambda: (j := manager.get(nzo_id)) and j.status == "failed")
+        job = manager.get(nzo_id)
+    assert asked == ["res1"]
+    assert job.ident == "res1"
+    assert "copies tried" not in job.error
+    assert (tmp_path / "incomplete" / nzo_id / FILE_NAME).stat().st_size == 120_000
+
+
+def test_job_loads_from_state_without_alternates(tmp_path):
+    # state.json written before alternates existed must still load.
+    _seed_interrupted_job(tmp_path, b"partial")
+    manager = downloads_module.DownloadManager(
+        FakeWebshareClient(), tmp_path / "complete", tmp_path / "incomplete",
+        tmp_path / "state.json")
+    manager.load_state()
+    job = manager.get("SABnzbd_nzo_resume01")
+    assert job is not None and job.ident == "res1"
+    assert job.alternates == []
+
+
 def test_ensure_dirs_creates_category_folders(tmp_path, monkeypatch):
     with _start_app(tmp_path, monkeypatch, "http://127.0.0.1:1/x"):
         assert (tmp_path / "complete" / "tv").is_dir()

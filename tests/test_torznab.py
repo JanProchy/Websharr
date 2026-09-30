@@ -1071,3 +1071,113 @@ def test_movie_feed_gets_title_prefix(client, fake_webshare, monkeypatch):
     resp = client.get("/torznab/api", params={"t": "movie", "apikey": "testkey", "tmdbid": "1227", "cat": "2000"})
     title = ET.fromstring(resp.content).findtext("channel/item/title")
     assert title.startswith("Asterix and Obelix Take On Caesar 1999 - Asterix a Obelix I.")
+
+
+def test_nzb_download_carries_alternates(client):
+    from app.nzb import parse_nzb
+    resp = client.get("/torznab/nzb/id1", params={
+        "apikey": "testkey", "name": "Vlny.2024.mkv", "size": "4000000000", "alt": "id2,id3",
+    })
+    assert parse_nzb(resp.content).alternates == ["id2", "id3"]
+    # A link from before alternates existed still works, with none.
+    resp = client.get("/torznab/nzb/id1", params={"apikey": "testkey", "name": "Vlny.2024.mkv"})
+    assert parse_nzb(resp.content).alternates == []
+
+
+def test_group_duplicates_by_size_and_extension():
+    from app.torznab import group_duplicates
+    big = 4_000_000_000
+    results = [
+        SearchResult("a", "Vlny.2024.1080p.mkv", big),
+        SearchResult("b", "Vlny 2024 CZ dabing 1080p.mkv", big),   # same file, other name
+        SearchResult("c", "Vlny.2024.1080p.mp4", big),             # other container
+        SearchResult("d", "Vlny.2024.720p.mkv", big - 1),          # other size
+        SearchResult("s1", "Vlny.2024.sample.mkv", 30_000_000),    # under 50 MB:
+        SearchResult("s2", "Vlny.2024.trailer.mkv", 30_000_000),   # never merged
+    ]
+    kept, alternates, grabs = group_duplicates(results)
+    assert [r.ident for r in kept] == ["b", "c", "d", "s1", "s2"]
+    assert alternates == {"b": ["a"]}
+
+
+def test_group_duplicates_picks_representative():
+    from app.torznab import group_duplicates
+    size = 1_000_000_000
+
+    def rep(results):
+        return group_duplicates(results)[0][0].ident
+
+    # The richer name wins, then the smallest ident (not the first seen).
+    assert rep([SearchResult("plain", "Film.mkv", size),
+                SearchResult("rich", "Film 2024 1080p.mkv", size)]) == "rich"
+    assert rep([SearchResult("zz", "Film 1080p.mkv", size),
+                SearchResult("aa", "Film 720p.mkv", size)]) == "aa"
+    # At most five alternates ride along; grabs sums the group's positive votes.
+    copies = [SearchResult(f"c{i}", "Film.mkv", size, 1) for i in range(8)]
+    kept, alternates, grabs = group_duplicates(copies)
+    assert len(kept) == 1 and alternates["c0"] == ["c1", "c2", "c3", "c4", "c5"]
+    assert grabs["c0"] == 8
+
+
+def test_group_representative_ignores_votes():
+    """*arr blocklists a release by guid + publish date, both derived from the
+    representative's ident; if votes picked it, a vote change would bring a
+    blocklisted file back under another ident."""
+    from app.torznab import group_duplicates
+    size = 1_000_000_000
+
+    def rep(votes_a, votes_b):
+        return group_duplicates([
+            SearchResult("b2", "Film 2024 1080p.mkv", size, *votes_b),
+            SearchResult("a1", "Film.2024.1080p.mkv", size, *votes_a),
+        ])[0][0].ident
+
+    assert rep((0, 0), (0, 0)) == rep((9, 0), (0, 3)) == rep((0, 4), (12, 0)) == "a1"
+
+
+def test_search_merges_identical_uploads(client, fake_webshare, monkeypatch):
+    """Re-uploads of one file (same size, other names/idents) were listed as
+    separate releases; now they are one, carrying the copies in the link."""
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "")
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("u1", "Vlny.2024.1080p.mkv", 4_000_000_000, positive_votes=2),
+        SearchResult("u2", "Vlny 2024 CZ dabing 1080p WEB-DL.mkv", 4_000_000_000,
+                     positive_votes=5, negative_votes=1),
+        SearchResult("u3", "Vlny (2024) 1080p.mkv", 4_000_000_000, positive_votes=1),
+        SearchResult("other", "Vlny.2024.1080p.mp4", 4_000_000_000),
+    ]
+    resp = client.get("/torznab/api", params={"t": "movie", "apikey": "testkey", "q": "Vlny 2024"})
+    items = {i.findtext("guid"): i for i in ET.fromstring(resp.content).findall("channel/item")}
+    assert set(items) == {"websharr-u2", "websharr-other"}
+    link = items["websharr-u2"].findtext("link")
+    assert "/torznab/nzb/u2?" in link and "alt=u1%2Cu3" in link
+    assert "alt=" not in items["websharr-other"].findtext("link")
+    attrs = {a.get("name"): a.get("value") for a in items["websharr-u2"].findall(f"{NZNS}attr")}
+    assert attrs["grabs"] == "8"
+
+
+def test_season_search_merges_only_within_an_episode(client, fake_webshare, monkeypatch):
+    """A copy only stands in for the same episode; the representative keeps
+    its own SxxEyy even though an equally sized file of another episode exists."""
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "")
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("e4a", "Futurama s08e04 1080p.mkv", 2_000_000_000),
+        SearchResult("e4b", "Futurama S08E04 Cesta k parazitum 1080p.mkv", 2_000_000_000),
+        SearchResult("e2", "Futurama S08E02 Bahnem 1080p.mkv", 2_000_000_000),
+    ]
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "q": "Futurama", "season": "8"})
+    items = ET.fromstring(resp.content).findall("channel/item")
+    assert [i.findtext("title") for i in items] == [
+        "Futurama S08E04 - Futurama Cesta k parazitum 1080p",
+        "Futurama S08E02 - Futurama Bahnem 1080p",
+    ]
+    assert "/torznab/nzb/e4b?" in items[0].findtext("link")
+    assert "alt=e4a" in items[0].findtext("link")
+    assert "alt=" not in items[1].findtext("link")

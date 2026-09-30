@@ -821,6 +821,50 @@ def relevance(queries: list[str], name: str) -> float:
     return best
 
 
+# Files at least this big with the same byte size and extension are treated as
+# the same upload (see group_duplicates).
+_DUP_MIN_SIZE = 50 * 1024 * 1024
+_MAX_ALTERNATES = 5
+
+
+def group_duplicates(results: list[SearchResult], episodes: dict[str, int] | None = None
+                     ) -> tuple[list[SearchResult], dict[str, list[str]], dict[str, int]]:
+    """Merge re-uploads of the same file into one release.
+
+    Webshare hosts the same file many times under different idents, often with
+    different names, so *arr listed one movie five times and failed a grab whose
+    link was dead although an identical copy was right there. Two different
+    encodes with the exact same byte size are practically impossible, so a size
+    + extension match (from 50 MB up) is one file. Season searches only merge
+    within the same episode.
+
+    Returns (kept, alternates, grabs): one representative per group in
+    first-seen order, up to five other idents per representative for the
+    download client to fall back to, and the group's summed positive votes.
+    The representative is picked by what never changes between searches — the
+    richer name, then the smallest ident — not by votes: its ident fixes the
+    guid and publish date (see _pub_date), and a representative that moved
+    with the votes would bring a blocklisted release back under a new ident.
+    """
+    episodes = episodes or {}
+    groups: dict[tuple, list[SearchResult]] = {}
+    for r in results:
+        ext = r.name.rsplit(".", 1)[-1].lower() if "." in r.name else ""
+        key = (r.size, ext, episodes.get(r.ident)) if r.size >= _DUP_MIN_SIZE else (r.ident,)
+        groups.setdefault(key, []).append(r)  # dicts keep first-seen order
+
+    kept: list[SearchResult] = []
+    alternates: dict[str, list[str]] = {}
+    grabs: dict[str, int] = {}
+    for group in groups.values():
+        rep = min(group, key=lambda r: (-len(normalize_text(r.name).split()), r.ident))
+        kept.append(rep)
+        if len(group) > 1:
+            alternates[rep.ident] = [r.ident for r in group if r is not rep][:_MAX_ALTERNATES]
+            grabs[rep.ident] = sum(r.positive_votes for r in group)
+    return kept, alternates, grabs
+
+
 # Window the synthetic publish dates fall into (see _pub_date).
 _PUB_EPOCH = 1640995200  # 2022-01-01 UTC
 _PUB_SPAN = 365 * 86400
@@ -846,12 +890,16 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
                  heights: dict[str, int] | None = None, audio: dict[str, str] | None = None,
                  language: str = "", czech_titles: list[str] | None = None,
                  infos: dict[str, dict] | None = None, ids: dict | None = None,
-                 titles: list[str] | None = None, year: int = 0) -> Response:
+                 titles: list[str] | None = None, year: int = 0,
+                 alternates: dict[str, list[str]] | None = None,
+                 grabs: dict[str, int] | None = None) -> Response:
     heights = heights or {}
     infos = infos or {}
     ids = {k: v for k, v in (ids or {}).items() if v}
     audio = audio or {}
     episodes = episodes or {}
+    alternates = alternates or {}
+    grabs = grabs or {}
     ET.register_namespace("torznab", TORZNAB_NS)
     ET.register_namespace("newznab", NEWZNAB_NS)
     rss = ET.Element("rss", {"version": "2.0"})
@@ -906,6 +954,10 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
             f"&name={urllib.parse.quote(_asciify(r.name))}&size={r.size}"
             f"&nzbname={urllib.parse.quote(title)}"
         )
+        # Identical copies ride along so the download client can fall back to
+        # one when this file's link is dead (see group_duplicates).
+        if alternates.get(r.ident):
+            link += f"&alt={urllib.parse.quote(','.join(alternates[r.ident]))}"
         ET.SubElement(item, "link").text = link
         ET.SubElement(item, "pubDate").text = _pub_date(r.ident)
         ET.SubElement(item, "size").text = str(r.size)
@@ -933,7 +985,7 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
             ET.SubElement(item, "{%s}attr" % ns, {"name": "category", "value": category})
             ET.SubElement(item, "{%s}attr" % ns, {"name": "size", "value": str(r.size)})
             ET.SubElement(item, "{%s}attr" % ns,
-                          {"name": "grabs", "value": str(r.positive_votes)})
+                          {"name": "grabs", "value": str(grabs.get(r.ident, r.positive_votes))})
             if item_lang:
                 ET.SubElement(item, "{%s}attr" % ns,
                               {"name": "language", "value": item_lang})
@@ -1027,6 +1079,10 @@ async def torznab_api(request: Request):
             seen.add(r.ident)
             merged.append(r)
 
+    found = len(merged)
+    merged, alternates, grabs = group_duplicates(merged, episodes)
+    if found > len(merged):
+        logger.info("Merged %d duplicate uploads into %d releases", found - len(merged), len(alternates))
     merged.sort(key=lambda r: (-relevance(queries, r.name), -r.size))
     logger.info("Newznab %s q=%r -> %d results", t, q, len(merged))
     # With an exact id, TMDB knows how long the title runs; files far off that
@@ -1059,7 +1115,7 @@ async def torznab_api(request: Request):
                         query=display, season=(season if t == "tvsearch" else None), ep=ep,
                         episodes=episodes, language=language, czech_titles=czech_titles,
                         infos=infos, ids={k: params.get(k) for k in ("tmdbid", "imdbid", "tvdbid")},
-                        titles=titles, year=year)
+                        titles=titles, year=year, alternates=alternates, grabs=grabs)
 
 
 @router.get("/torznab/nzb/{ident}")
@@ -1074,8 +1130,9 @@ async def torznab_nzb(ident: str, request: Request):
         size = int(request.query_params.get("size", "0"))
     except ValueError:
         size = 0
+    alternates = [a for a in request.query_params.get("alt", "").split(",") if a]
 
-    content = build_nzb(ident, name, size)
+    content = build_nzb(ident, name, size, alternates)
     # Name the NZB after the parseable release title (nzbname) when present:
     # Sonarr re-uploads it to the SABnzbd client using this filename as the job
     # name, so the download folder carries SxxEyy for import.
