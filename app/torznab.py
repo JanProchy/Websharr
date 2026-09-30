@@ -200,6 +200,14 @@ def _asciify(text: str) -> str:
     return re.sub(r"\s{2,}", " ", text).strip()
 
 
+# An episode marker in a file name with an optional second number: a range /
+# double episode ("S01E01-E02", "S01E01E02", "1x01-02") or a total ("S01E23-26",
+# "S01E23 z 26", "S01E23 of 26", "S01E23/26").
+_MARKER_RE = re.compile(
+    r"\b(?:s\d{1,2}e(?P<ep1>\d{1,3})|\d{1,2}x(?P<ep2>\d{1,3}))"
+    r"(?:(?:\s*[-–/]\s*|\s+(?:z|of|ze)\s+)e?(?P<to>\d{1,3})|e(?P<to2>\d{1,3}))?\b", re.I)
+
+
 def release_title(query: str, season: str | None, ep: str | None, name: str) -> str:
     """Sonarr/Radarr-parseable release name.
 
@@ -216,16 +224,26 @@ def release_title(query: str, season: str | None, ep: str | None, name: str) -> 
     except (TypeError, ValueError):
         return _asciify(stem)
     q = (query or "").strip()
+    marker = _MARKER_RE.search(stem)
     if ep is not None:
         try:
-            prefix = f"{q} S{s:02d}E{int(ep):02d}"
+            e = int(ep)
+            prefix = f"{q} S{s:02d}E{e:02d}"
+            # "S01E01-E02" / "S01E01E02": a real double episode stays one
+            file_ep = marker and int(marker.group("ep1") or marker.group("ep2"))
+            to = marker and (marker.group("to") or marker.group("to2"))
+            if to and file_ep == e and int(to) == e + 1:
+                prefix += f"-E{e + 1:02d}"
         except (TypeError, ValueError):
             prefix = f"{q} S{s:02d}"
     else:
         prefix = f"{q} S{s:02d}"
     # Strip any SxxEyy/1x02 already in the filename so the release doesn't carry
-    # two episode markers (confuses *arr's parser: "unable to determine episode").
-    stem = re.sub(r"\b(s\d{1,2}e\d{1,3}|\d{1,2}x\d{1,3})\b", "", stem, flags=re.I)
+    # two episode markers (confuses *arr's parser: "unable to determine episode")
+    # — with what follows it: a range, or the season's episode count of Czech
+    # uploads ("S01E23-26" = part 23 of 26), which a left-over "-26" turned into
+    # an episode range Sonarr then refused to import ("unexpected episodes").
+    stem = _MARKER_RE.sub("", stem)
     stem = re.sub(r"\.{2,}", ".", stem)          # double dots left by the removal
     stem = re.sub(r"\s{2,}", " ", stem).strip(" .-")
     return _asciify(f"{prefix} - {stem}".strip(" -"))

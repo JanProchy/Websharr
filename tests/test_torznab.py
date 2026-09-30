@@ -35,6 +35,23 @@ def test_release_title_normalizes_for_tvsearch():
     assert release_title("Vlny 2024", None, None, "Vlny.2024.1080p.mkv") == "Vlny.2024.1080p"
 
 
+def test_release_title_drops_the_episode_count_after_the_marker():
+    """"S01E23-26" is part 23 of 26 in Czech uploads: a left-over "-26" made
+    Sonarr read an episode range and refuse the import. A real double episode
+    (next number right after) stays a double."""
+    name = "Byl jednou jeden zivot S01E23-26 1987 CZ dab - Hormony (puvodni dabing CST).mp4"
+    assert release_title("Once Upon a Time... Life", "1", "23", name) == \
+        "Once Upon a Time... Life S01E23 - Byl jednou jeden zivot 1987 CZ dab - Hormony (puvodni dabing CST)"
+    for total in ("S01E03 z 26", "S01E03 of 26", "S01E03/26", "1x03-26"):
+        title = release_title("Show", "1", "3", f"Show {total} 1080p CZ.mkv")
+        assert title == "Show S01E03 - Show 1080p CZ", total
+    # a genuine double episode keeps both numbers
+    assert release_title("Show", "1", "1", "Show S01E01-E02 1080p.mkv") == "Show S01E01-E02 - Show 1080p"
+    assert release_title("Show", "1", "1", "Show.S01E01E02.1080p.mkv").startswith("Show S01E01-E02 - ")
+    # years and resolutions after the marker are left alone
+    assert release_title("Show", "1", "2", "Show S01E02 - 2019 720p.mkv") == "Show S01E02 - Show - 2019 720p"
+
+
 def test_parse_query_extracts_episode_from_text():
     # Typing "skvrna s01e05" into the box (no season/ep fields) is parsed out.
     assert parse_query("tvsearch", "skvrna s01e05", None, None) == ("tvsearch", "skvrna", "01", "05")
