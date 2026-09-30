@@ -172,6 +172,80 @@ def test_restart_resumes_interrupted_download(tmp_path, monkeypatch, support_ran
         httpd.shutdown()
 
 
+def _serve_dropping(payload: bytes, drop_at: int, drops: int = 1):
+    """Range-capable server that closes the connection after `drop_at` bytes of
+    the body on its first `drops` responses (Content-Length promises it all)."""
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        ranges: list = []
+        served = 0
+
+        def do_GET(self):
+            rng = self.headers.get("Range")
+            Handler.ranges.append(rng)
+            start = int(rng.removeprefix("bytes=").split("-")[0]) if rng else 0
+            data = payload[start:]
+            self.send_response(206 if rng else 200)
+            if rng:
+                self.send_header("Content-Range", f"bytes {start}-{len(payload) - 1}/{len(payload)}")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            Handler.served += 1
+            if Handler.served <= drops:
+                self.wfile.write(data[:drop_at])
+                self.wfile.flush()
+                self.close_connection = True
+                return
+            self.wfile.write(data)
+
+        def log_message(self, *args):
+            pass
+
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return httpd, Handler
+
+
+def test_dropped_connection_resumes_instead_of_failing(client, fake_webshare, monkeypatch):
+    """"peer closed connection without sending complete message body" mid-file:
+    continue from the partial file with a fresh link instead of failing the job
+    (which made *arr blocklist a good release)."""
+    # bigger than the 1 MiB write chunk, so the drops leave real bytes on disk
+    payload = bytes(range(256)) * 16_384  # 4 MiB
+    httpd, handler = _serve_dropping(payload, drop_at=1_500_000, drops=2)
+    try:
+        fake_webshare.file_link_url = f"http://127.0.0.1:{httpd.server_address[1]}/{FILE_NAME}"
+        nzb = build_nzb("drop1", FILE_NAME, len(payload))
+        resp = client.post("/sabnzbd/api", params={"mode": "addfile", "apikey": "testkey", "cat": "movies"},
+                           files={"nzbfile": ("x.nzb", nzb.encode(), "application/x-nzb")})
+        nzo_id = resp.json()["nzo_ids"][0]
+        manager = app.state.downloads
+        assert wait_for(lambda: (j := manager.get(nzo_id)) and j.status == "completed")
+        job = manager.get(nzo_id)
+        assert (Path(job.storage) / FILE_NAME).read_bytes() == payload
+        # continued from what was on disk each time, not from zero
+        assert handler.ranges[0] is None and len(handler.ranges) == 3
+        assert all(r and r.startswith("bytes=") and r != "bytes=0-" for r in handler.ranges[1:])
+    finally:
+        httpd.shutdown()
+
+
+def test_dropped_connection_fails_after_the_attempts(client, fake_webshare, monkeypatch):
+    monkeypatch.setattr(downloads_module, "RESUME_ATTEMPTS", 2)
+    httpd, handler = _serve_dropping(PAYLOAD, drop_at=10_000, drops=99)
+    try:
+        fake_webshare.file_link_url = f"http://127.0.0.1:{httpd.server_address[1]}/{FILE_NAME}"
+        nzb = build_nzb("drop2", FILE_NAME, len(PAYLOAD))
+        resp = client.post("/sabnzbd/api", params={"mode": "addfile", "apikey": "testkey", "cat": "movies"},
+                           files={"nzbfile": ("x.nzb", nzb.encode(), "application/x-nzb")})
+        nzo_id = resp.json()["nzo_ids"][0]
+        manager = app.state.downloads
+        assert wait_for(lambda: (j := manager.get(nzo_id)) and j.status == "failed")
+        assert len(handler.ranges) == 3  # first try + 2 resumes
+    finally:
+        httpd.shutdown()
+
+
 def test_retry_failed_job(client, fake_webshare, tmp_path):
     # First attempt fails: the default fake link is unreachable.
     nzb = build_nzb("rty1", "Retry.Me.2024.mkv", 100)
