@@ -593,6 +593,46 @@ def test_resolution_class():
     assert resolution_class(0, 0) == 0
 
 
+def _http_error(status):
+    import httpx
+    req = httpx.Request("POST", "https://webshare.cz/api/file_info/")
+    return httpx.HTTPStatusError("err", request=req, response=httpx.Response(status, request=req))
+
+
+class _FlakyClient:
+    def __init__(self, fail_times, status=403):
+        self.calls = 0
+        self.fail_times = fail_times
+        self.status = status
+
+    async def file_info(self, ident):
+        self.calls += 1
+        if self.calls <= self.fail_times:
+            raise _http_error(self.status)
+        return {"length": 5400, "width": 1920, "height": 1080}
+
+
+def test_file_info_retries_on_403_and_caches():
+    import asyncio
+    from app import torznab
+    c = _FlakyClient(fail_times=2)
+    info = asyncio.run(torznab._file_info(c, "x1"))
+    assert info["height"] == 1080 and c.calls == 3        # two 403s, then success
+    asyncio.run(torznab._file_info(c, "x1"))
+    assert c.calls == 3                                    # served from the cache
+
+
+def test_file_info_fails_open_after_retries():
+    import asyncio
+    from app import torznab
+    c = _FlakyClient(fail_times=99)
+    assert asyncio.run(torznab._file_info(c, "x2")) == {}
+    assert c.calls == 4                                    # 1 try + 3 retries
+    c404 = _FlakyClient(fail_times=99, status=404)
+    assert asyncio.run(torznab._file_info(c404, "x3")) == {}
+    assert c404.calls == 1                                 # not retryable
+
+
 def test_search_labels_odd_height_with_known_class(client, fake_webshare):
     fake_webshare.results = [SearchResult("q3", "Skvrna 05 - Bestie.avi", 200_000_000)]
     fake_webshare.file_infos = {"q3": {"length": 1700, "width": 640, "height": 384,
