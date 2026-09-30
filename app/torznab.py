@@ -389,12 +389,12 @@ async def expand_titles(t: str, q: str, cat: str | None, *, tvdbid: str | None =
     return titles, display, language, czech_titles, year
 
 
-# Releases that are never the title itself: cinema recordings, trailers and
-# samples, 3D frame-packed versions. Matched on whole normalized tokens (not
+# Releases that are never the title itself: cinema recordings and work prints,
+# trailers and samples, 3D frame-packed versions. Matched on whole normalized tokens (not
 # substrings), after the extension is stripped so a ".ts" container isn't "TS".
 _JUNK_TOKENS = frozenset("""
 cam camrip hdcam ts telesync hdts tc telecine hdtc scr screener dvdscr bdscr webscr
-kinorip pdvd predvd predvdrip r5
+kinorip pdvd predvd predvdrip r5 workprint
 trailer trailers teaser sample ukazka upoutavka upoutavky
 3d sbs hsbs mvc
 """.split())

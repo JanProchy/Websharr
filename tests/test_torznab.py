@@ -300,6 +300,8 @@ def test_junk_reason():
     assert junk_reason("Duna 2 - upoutavka CZ.mp4")
     assert junk_reason("Black Panther 2017 3D Half SBS CZ dab HD 1080p.mkv")
     assert junk_reason("Avatar S01E03 CZ.mkv", movie=True)
+    # an unfinished work print, not the film (Radarr took one as WEBDL-1080p)
+    assert junk_reason("The.Amazing.Digital.Circus.The.Last.Act.2026.1080p.WORKPRiNT.WEB-DL.x264-DKS.mkv")
     # a ".ts" container, words merely containing a token, and normal names pass
     assert not junk_reason("Hleda se Nemo 2003 CZ.ts")
     assert not junk_reason("Scooby-Doo a pratele (2004) CZ.mkv")
