@@ -25,6 +25,13 @@ CHUNK_SIZE = 1024 * 1024
 HISTORY_CAP = 500  # keep this many completed/failed records in the UI history
 
 
+def describe_error(exc: BaseException) -> str:
+    """Error text for the history and *arr's fail message. Several httpx errors
+    (ReadTimeout, PoolTimeout…) carry no message, which left "failed: " with
+    nothing to go on; then the exception type is said instead."""
+    return str(exc).strip() or type(exc).__name__
+
+
 def _total_size(resp: httpx.Response, offset: int) -> int:
     """Full file size implied by the response (0 if unknown)."""
     if resp.status_code == 206:
@@ -303,10 +310,11 @@ class DownloadManager:
             raise
         except (WebshareError, httpx.HTTPError, OSError) as exc:
             job.status = "failed"
-            job.error = str(exc)
+            job.error = describe_error(exc)
             job.completed_ts = time.time()
             # Keep the partial file so a retry can resume; delete() cleans it up.
-            logger.error("Download %s failed: %s", job.nzo_id, exc)
+            logger.error("Download %s failed: %s", job.nzo_id, job.error,
+                         exc_info=not str(exc))  # no text: the traceback is all there is
             if self._notify:
                 try:
                     await self._notify("Websharr: download failed", f"{job.job_name}\n{exc}")
