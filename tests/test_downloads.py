@@ -144,7 +144,7 @@ def _start_app(tmp_path, monkeypatch, file_link_url: str) -> TestClient:
     monkeypatch.setattr(config, "state_file", tmp_path / "state.json")
     monkeypatch.setattr(config, "settings_file", tmp_path / "settings.json")
 
-    def factory(username, password, password_digest=""):
+    def factory(username, password, password_digest="", search_cache_ttl=0):
         fake = FakeWebshareClient(username, password, password_digest)
         fake.file_link_url = file_link_url
         return fake
@@ -230,6 +230,22 @@ def test_ensure_dirs_creates_category_folders(tmp_path, monkeypatch):
         assert (tmp_path / "complete" / "tv").is_dir()
         assert (tmp_path / "complete" / "movies").is_dir()
         assert (tmp_path / "incomplete").is_dir()
+
+
+def test_ensure_dirs_follows_configured_categories(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "categories", ["tv", "tv-kids"])
+    with _start_app(tmp_path, monkeypatch, "http://127.0.0.1:1/x"):
+        assert (tmp_path / "complete" / "tv-kids").is_dir()
+        assert not (tmp_path / "complete" / "movies").exists()
+
+
+def test_categories_env_parsing():
+    from app.config import parse_categories
+    assert parse_categories("tv,movies") == ["tv", "movies"]
+    assert parse_categories(" TV , *, tv-kids,\nmovies_4k,") == ["tv", "tv-kids", "movies_4k"]
+    for bad in ("tv,tv", "tv/kids", "a" * 41):
+        with pytest.raises(ValueError):
+            parse_categories(bad)
 
 
 def test_retry_unknown_job(client):
