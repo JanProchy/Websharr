@@ -301,6 +301,35 @@ def test_file_marker_reads_season():
     assert file_marker("Skvrna", "Skvrna - Bestie 1080p.mkv") == (None, None)
 
 
+def test_file_marker_bare_number_must_follow_title():
+    from app.torznab import file_marker
+    # A bare number only counts as the episode right after the title (optionally
+    # behind a year or "dil"/"epizoda") — not an audio-channel "5.1"/"2.0" or a
+    # "Season 2" deep in the name.
+    assert file_marker("Blue", "Blue Planet II One Ocean 1080p AMZN WEB-DL DDP5 1 H 264-NTb.mkv") == (None, None)
+    assert file_marker("Skvrna", "Skvrna - Bestie 1080p AAC 2 0.mkv") == (None, None)
+    assert file_marker("Zaklinac", "Zaklinac Season 2 dabing S02E03.mkv") == (2, 3)
+    # CZ uploads that must keep working
+    assert file_marker("Kaceri pribehy", "Kaceri pribehy 2017 05 dabing.avi") == (None, 5)
+    assert file_marker("Krtek", "Krtek dil 3 - Krtek a autíčko.avi") == (None, 3)
+    assert file_marker("Krtek", "Krtek - 07 - Krtek a paraplicko.avi") == (None, 7)
+
+
+def test_file_marker_rejects_other_show_before_marker():
+    from app.torznab import file_marker
+    titles = ["Bluey", "Blue"]  # TMDB gave the Czech title "Blue"
+    assert file_marker(titles, "Blue Planet II S01E01 One Ocean 1080p.mkv") == (None, None)
+    assert file_marker(titles, "Blue Thunder S01E01 Second Thunder 1080p BluRay.mkv") == (None, None)
+    assert file_marker(titles, "Blue.Lights.S01E01.PL.1080p.WEB-DL.mkv") == (None, None)
+    assert file_marker(titles, "Bluey S01E01 Magic Xylophone 1080p CZ.mkv") == (1, 1)
+    # season/language words, a year and the other names of the show are fine
+    assert file_marker("Zaklinac", "Zaklinac serie dabing S02E03.mkv") == (2, 3)
+    assert file_marker(["DuckTales", "Kaceri pribehy"], "Kaceri pribehy 2017 S01E02 CZ.mkv") == (1, 2)
+    assert file_marker(["The Sleepers", "Bez vedomi"], "Bez.vedomi.S01E01.2019.CZ.mkv") == (1, 1)
+    assert file_marker("House of the Dragon", "House.of.the.Dragon.S01E05.mkv") == (1, 5)
+    assert file_marker("Skvrna", "Skvrna CZ dabing S01E05 1080p.mkv") == (1, 5)
+
+
 def test_search_drops_other_season_with_same_episode(client, fake_webshare, monkeypatch):
     """A "DuckTales S01E02" search must not return "DuckTales.S02E02..." — the
     episode number matches but the season does not (the real-life mis-grab:
@@ -321,6 +350,25 @@ def test_search_drops_other_season_with_same_episode(client, fake_webshare, monk
     root = ET.fromstring(resp.content)
     titles = [it.findtext("title") for it in root.findall("channel/item")]
     assert len(titles) == 1 and "Wronguay" in titles[0]
+
+
+def test_episode_search_ignores_numbers_in_tech_tokens(client, fake_webshare, monkeypatch):
+    """Real-life mis-label: a "Bluey" search also queried the TMDB Czech title
+    "Blue", and "Blue Planet II ... DDP5.1" came back as "Bluey S01E01 - ..." —
+    the "1" of the 5.1 audio tag was read as the episode number."""
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [{"from": "Bluey", "to": "Blue"}])
+    monkeypatch.setattr(settings, "tmdb_token", "")
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("ok", "Bluey S01E01 Magic Xylophone 1080p WEB-DL CZ.mkv", 300_000_000),
+        SearchResult("bp", "Blue Planet II One Ocean 1080p AMZN WEB-DL DDP5 1 H 264-NTb.mkv", 5_300_000_000),
+    ]
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "q": "Bluey", "season": "1", "ep": "1"})
+    root = ET.fromstring(resp.content)
+    titles = [i.findtext("title") for i in root.findall("channel/item")]
+    assert len(titles) == 1 and "Magic Xylophone" in titles[0]
 
 
 def test_season_search_returns_individual_episodes(client, fake_webshare, monkeypatch):
