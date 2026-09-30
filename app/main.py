@@ -75,6 +75,9 @@ async def lifespan(app: FastAPI):
     app.state.account = None
     app.state.account_ts = 0.0
     app.state.account_refresh_ok = None  # None until the first refresh attempt ends
+    # Set by the UI when Webshare credentials change: refresh now instead of
+    # leaving /health "pending" (or failed) until the next hourly round.
+    app.state.account_refresh = asyncio.Event()
     monitor_task = asyncio.create_task(_account_monitor(app))
     logger.info("Websharr %s started (user=%s)", __version__,
                 config.webshare_username or "<not configured>")
@@ -119,7 +122,11 @@ async def _account_monitor(app: FastAPI) -> None:
                 await notify.send_throttled(
                     settings.notify_urls, "webshare_down", "Websharr: Webshare unreachable",
                     f"Could not reach Webshare: {exc}", 6 * 3600)
-        await asyncio.sleep(ACCOUNT_REFRESH)
+        try:
+            await asyncio.wait_for(app.state.account_refresh.wait(), ACCOUNT_REFRESH)
+        except asyncio.TimeoutError:
+            pass
+        app.state.account_refresh.clear()
 
 
 app = FastAPI(title="Websharr", version=__version__, lifespan=lifespan)

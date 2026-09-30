@@ -91,3 +91,40 @@ def test_health_dir_missing(healthy, monkeypatch, tmp_path):
     assert resp.status_code == 503
     assert resp.json()["checks"]["storage"]["reason"] == "complete dir missing"
     assert str(tmp_path) not in resp.text
+
+
+def test_monitor_refreshes_right_away_when_woken(monkeypatch):
+    """Saving new Webshare credentials wakes the monitor: /health doesn't stay
+    pending (or failed) until the next hourly refresh."""
+    import asyncio
+    from types import SimpleNamespace
+
+    calls = []
+
+    class Client:
+        async def account_status(self):
+            calls.append(time.monotonic())
+            return {"vip": True, "vip_days": 30, "vip_until": "2027-01-01"}
+
+    monkeypatch.setattr(config, "webshare_username", "ws@example.com")
+    fake = SimpleNamespace(state=SimpleNamespace(webshare=Client(), account=None, account_ts=0.0,
+                                                 account_refresh_ok=None))
+
+    async def run():
+        fake.state.account_refresh = asyncio.Event()
+        task = asyncio.create_task(app_main._account_monitor(fake))
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            if calls:
+                break
+        fake.state.account_refresh.set()  # what the UI does after a credential change
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            if len(calls) == 2:
+                break
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(run())
+    assert len(calls) == 2 and fake.state.account_refresh_ok is True
+    assert ACCOUNT_REFRESH > 60  # the second call came from the wake-up, not the timer
