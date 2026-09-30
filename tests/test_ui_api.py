@@ -144,6 +144,15 @@ def test_ui_grab_sets_parseable_folder_title(client, fake_webshare):
     assert job.job_name.startswith("Skvrna S01E01")
 
 
+def test_settings_rejects_invalid_categories(client):
+    for bad in ("tv,Kids Shows", "tv,../x", "tv,tv", "a" * 41, 5):
+        resp = client.post("/ui/api/settings", params={"apikey": "testkey"}, json={"categories": bad})
+        assert resp.status_code == 400, bad
+        assert resp.json()["error"]
+    # Nothing was applied: the defaults stay in place.
+    assert _ui(client, "settings").json()["categories"] == ["tv", "movies"]
+
+
 def test_ui_search_empty_query(client):
     body = _ui(client, "search", q="", t="search").json()
     assert body["results"] == []
