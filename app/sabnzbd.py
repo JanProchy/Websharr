@@ -7,6 +7,8 @@ history (list/delete), retry, addfile, addurl.
 
 import logging
 import re
+import shutil
+import time
 import urllib.parse
 
 from fastapi import APIRouter, Request
@@ -21,6 +23,7 @@ logger = logging.getLogger("websharr.sabnzbd")
 router = APIRouter()
 
 SAB_VERSION = "4.3.3"
+STARTED = time.time()
 
 
 def _err(message: str, status_code: int = 200) -> JSONResponse:
@@ -29,6 +32,24 @@ def _err(message: str, status_code: int = 200) -> JSONResponse:
 
 def _fmt_mb(num_bytes: float) -> str:
     return f"{num_bytes / (1024 * 1024):.2f}"
+
+
+def _disk_gb(path) -> tuple[str, str]:
+    """(free, total) in GB with 2 decimals, as SABnzbd reports diskspace."""
+    try:
+        usage = shutil.disk_usage(path)
+    except OSError:
+        return "0.00", "0.00"
+    return f"{usage.free / 1024 ** 3:.2f}", f"{usage.total / 1024 ** 3:.2f}"
+
+
+def _fmt_uptime(secs: float) -> str:
+    secs = int(secs)
+    if secs >= 86400:
+        return f"{secs // 86400}d"
+    if secs >= 3600:
+        return f"{secs // 3600}h"
+    return f"{secs // 60}m"
 
 
 def _fmt_timeleft(job: Job) -> str:
@@ -170,8 +191,15 @@ async def sabnzbd_api(request: Request):
         return JSONResponse({"categories": ["*", *manager.categories]})
 
     if mode == "fullstatus":
-        return JSONResponse({"status": {"version": SAB_VERSION, "uptime": "1h",
-                                        "diskspace1": "1000.0", "diskspace2": "1000.0"}})
+        # Like SABnzbd: 1 = download (incomplete) dir, 2 = complete dir.
+        free1, total1 = _disk_gb(config.incomplete_dir)
+        free2, total2 = _disk_gb(config.complete_dir)
+        return JSONResponse({"status": {
+            "version": SAB_VERSION,
+            "uptime": _fmt_uptime(time.time() - STARTED),
+            "diskspace1": free1, "diskspacetotal1": total1,
+            "diskspace2": free2, "diskspacetotal2": total2,
+        }})
 
     if mode == "queue":
         if params.get("name") == "delete":

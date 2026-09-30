@@ -7,6 +7,7 @@ search and download from a Webshare.cz premium account.
 
 import asyncio
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 
@@ -74,6 +75,7 @@ async def lifespan(app: FastAPI):
     app.state.downloads = manager
     app.state.account = None
     app.state.account_ts = 0.0
+    app.state.account_refresh_ok = None  # None until the first refresh attempt ends
     monitor_task = asyncio.create_task(_account_monitor(app))
     logger.info("Websharr %s started (user=%s)", __version__,
                 config.webshare_username or "<not configured>")
@@ -99,6 +101,7 @@ async def _account_monitor(app: FastAPI) -> None:
                 status = await client.account_status()
                 app.state.account = status
                 app.state.account_ts = time.time()
+                app.state.account_refresh_ok = True
                 notify.reset_throttle("webshare_down")
                 urls = settings.notify_urls
                 if not status["vip"]:
@@ -112,6 +115,7 @@ async def _account_monitor(app: FastAPI) -> None:
                 else:
                     notify.reset_throttle("vip")  # healthy again → warn afresh next time
             except Exception as exc:  # background loop must survive anything
+                app.state.account_refresh_ok = False
                 logger.warning("Webshare account status refresh failed: %s", exc)
                 await notify.send_throttled(
                     settings.notify_urls, "webshare_down", "Websharr: Webshare unreachable",
@@ -137,9 +141,41 @@ async def status():
     }
 
 
+def _storage_check() -> dict:
+    for label, path in (("complete", config.complete_dir), ("incomplete", config.incomplete_dir)):
+        if not path.is_dir():
+            return {"status": "error", "reason": f"{label} dir missing"}
+        if not os.access(path, os.W_OK):
+            return {"status": "error", "reason": f"{label} dir not writable"}
+    return {"status": "ok"}
+
+
+def _webshare_check() -> dict:
+    """Judge the account from what _account_monitor cached — a health probe
+    must never hit Webshare itself (Docker polls it every minute)."""
+    if not config.webshare_username:
+        return {"status": "error", "reason": "Webshare account not configured"}
+    ts = app.state.account_ts
+    if not ts:
+        if app.state.account_refresh_ok is False:
+            return {"status": "error", "reason": "Webshare account refresh failed"}
+        return {"status": "pending"}  # startup: first refresh still running
+    if time.time() - ts > 3 * ACCOUNT_REFRESH:
+        return {"status": "error", "reason": "Webshare account not refreshed for "
+                f"{int((time.time() - ts) // 3600)} h"}
+    if not (app.state.account or {}).get("vip"):
+        return {"status": "error", "reason": "Webshare VIP expired"}
+    return {"status": "ok"}
+
+
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    """Unauthenticated liveness for Docker/Uptime Kuma: 503 when downloads
+    can't work. Exposes no paths or account details."""
+    checks = {"storage": _storage_check(), "webshare": _webshare_check()}
+    ok = all(c["status"] != "error" for c in checks.values())
+    return JSONResponse({"status": "ok" if ok else "error", "checks": checks},
+                        status_code=200 if ok else 503)
 
 
 def _fmt_speed(bps: float) -> str:

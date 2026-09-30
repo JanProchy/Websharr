@@ -1,3 +1,4 @@
+from app.config import config
 from app.main import app
 from app.nzb import build_nzb
 
@@ -172,3 +173,17 @@ def test_queue_delete(client, fake_webshare):
     resp = _api(client, mode="queue", name="delete", value=nzo_id)
     assert resp.json()["status"] is True
     assert app.state.downloads.get(nzo_id) is None
+
+
+def test_fullstatus_reports_disk_space(client, monkeypatch, tmp_path):
+    status = _api(client, mode="fullstatus").json()["status"]
+    for key in ("diskspace1", "diskspace2", "diskspacetotal1", "diskspacetotal2"):
+        assert float(status[key]) > 0
+        assert len(status[key].split(".")[1]) == 2  # SABnzbd-style "123.45" GB
+    assert float(status["diskspace1"]) <= float(status["diskspacetotal1"])
+    assert status["uptime"]
+
+    # A missing dir reports zero instead of failing the whole call.
+    monkeypatch.setattr(config, "complete_dir", tmp_path / "gone")
+    status = _api(client, mode="fullstatus").json()["status"]
+    assert status["diskspace2"] == "0.00" and status["diskspacetotal2"] == "0.00"
