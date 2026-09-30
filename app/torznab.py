@@ -521,6 +521,14 @@ _HAS_CODEC_RE = re.compile(r"\b(x ?26[45]|h ?\.?26[45]|hevc|avc|xvid|divx|av1|vc
 _HAS_AUDIO_RE = re.compile(
     r"(\bdd\+|\bddp|\be-?ac-?3|\bac-?3|\baac|\bdts|\btruehd|\batmos|\bflac|\bmp3|\bopus|\bl?pcm)", re.I)
 _UHD_CLAIM_RE = re.compile(r"\b(2160p?|4k|uhd)\b", re.I)
+# Uploaders mark AI upscales in the name ("1080p.AI.WEB", "AI.Upscale.2160p",
+# "Regrade"); TRaSH's Upscaled custom format misses the bare "AI" form. A lone
+# "AI" only counts next to a resolution/source/codec tag, so titles like
+# "Ai Weiwei" stay untouched.
+_UPSCALE_WORDS = frozenset({"upscale", "upscaled", "upscaling", "aius", "regrade", "regraded"})
+_AI_NEIGHBOURS = frozenset({"web", "webrip", "webdl", "dl", "bluray", "bdrip", "brrip", "hdtv", "uhd", "fhd", "4k",
+                            "enhanced", "remaster", "remastered", "x264", "x265", "h264", "h265", "hevc", "avc"})
+_RES_TOKEN_RE = re.compile(r"^\d{3,4}p$")
 _HEVC_FORMATS = {"HEVC", "H265", "H.265"}
 _AVC_FORMATS = {"H264", "AVC", "H.264"}
 _CHANNELS = {8: "7.1", 7: "6.1", 6: "5.1", 3: "2.1", 2: "2.0", 1: "1.0"}
@@ -563,6 +571,17 @@ def audio_token(info: dict, prefer: tuple[str, ...] = ()) -> str:
     }[kind].strip()
 
 
+def upscale_claim(name: str) -> bool:
+    """True when the name says the picture is an (AI) upscale."""
+    toks = [x for x in re.split(r"[^a-z0-9]+", name.lower()) if x]
+    for i, tok in enumerate(toks):
+        if tok in _UPSCALE_WORDS:
+            return True
+        if tok == "ai" and any(n in _AI_NEIGHBOURS or _RES_TOKEN_RE.match(n) for n in toks[max(0, i - 1):i + 2]):
+            return True
+    return False
+
+
 def quality_tokens(name: str, size: int, info: dict, *, czech: bool = False,
                    tags: bool = False) -> tuple[str, list[str]]:
     """(name with a corrected resolution, extra tokens) from the measured file.
@@ -573,8 +592,8 @@ def quality_tokens(name: str, size: int, info: dict, *, czech: bool = False,
     - codec (x264/x265, never a bare "HEVC"/"AVC": with "BluRay" those read as
       BR-DISK) and the best audio track, only when the name carries none — the
       uploader's own tags (Atmos, DTS-HD, HDR…) stay authoritative
-    - "Upscaled" for 2160p below a real UHD bitrate (a TRaSH custom format
-      already blocks it)
+    - "Upscaled" for 2160p below a real UHD bitrate, and for a name that says
+      "AI"/"Upscale"/"Regrade" (a TRaSH custom format already blocks it)
 
     With `tags` (the "Release tags" setting), also Websharr's own tokens, which
     only mean something to custom formats made for them (see the README):
@@ -584,8 +603,9 @@ def quality_tokens(name: str, size: int, info: dict, *, czech: bool = False,
       not just a name claim), "CZunverified" when the name claims a dub the
       tagged tracks don't show
     """
+    upscaled = upscale_claim(name) and not re.search(r"\bupscaled\b", name, re.I)
     if not info:
-        return name, []
+        return name, ["Upscaled"] if upscaled else []
     tokens: list[str] = []
     measured = resolution_class(int(info.get("width") or 0), int(info.get("height") or 0))
     if measured:
@@ -606,7 +626,7 @@ def quality_tokens(name: str, size: int, info: dict, *, czech: bool = False,
             tokens.append(tok)
     mbmin = _mb_per_min(size, int(info.get("length") or 0))
     klass = measured or next((int(m) for m in _RES_RE.findall(name)), 0)
-    if mbmin and klass >= 2160 and mbmin < _UHD_FLOOR:
+    if upscaled or (mbmin and klass >= 2160 and mbmin < _UHD_FLOOR):
         tokens.append("Upscaled")
     elif tags and mbmin and klass in _LOW_BITRATE:
         floor = _LOW_BITRATE[klass][1 if fmt in _HEVC_FORMATS else 0]

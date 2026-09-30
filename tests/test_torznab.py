@@ -967,6 +967,22 @@ def test_quality_tokens():
     assert quality_tokens("A", 1, {}) == ("A", [])
 
 
+def test_upscale_claim_in_the_name():
+    """An AI upscale said in the name gets TRaSH's "Upscaled" token even at 1080p
+    (DuckTales ...1080p.AI.WEB... from an SD master was taken as WEBDL-1080p)."""
+    from app.torznab import quality_tokens, upscale_claim
+    assert upscale_claim("DuckTales.Maid.Of.The.Myth.CZECH.1080p.AI.WEB.H264-ZEPPELiN")
+    assert upscale_claim("Vinnetou.1963.CZ.EN.Blu-Ray.AI.Upscale.2160p.x265")
+    assert upscale_claim("Film 1985 Regrade 1080p") and upscale_claim("Film AIUS 2160p")
+    # titles that merely contain "AI"
+    assert not upscale_claim("Ai Weiwei Never Sorry 2012 1080p")
+    assert not upscale_claim("A.I. Artificial Intelligence 2001 1080p")
+    gb = 1024 ** 3
+    assert "Upscaled" in quality_tokens("DuckTales.S01E05.CZECH.1080p.AI.WEB.H264-ZEPPELiN", 2 * gb, _info())[1]
+    assert quality_tokens("Film 1080p AI WEB", 1, {}) == ("Film 1080p AI WEB", ["Upscaled"])  # probe failed
+    assert "Upscaled" not in quality_tokens("Film 2160p Upscaled", 20 * gb, _info(width=3840, height=2160))[1]
+
+
 def test_feed_languages_torso_and_ids(client, fake_webshare, monkeypatch):
     from app.settings import settings
     monkeypatch.setattr(settings, "aliases", [])
