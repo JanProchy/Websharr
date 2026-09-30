@@ -130,6 +130,14 @@ as normal; you just lose the automatic Czech-title resolution.
 
 ## Monitoring and notifications
 
+- **Health check.** `GET /health` (no API key) returns `200` when the download
+  folders are writable and the Webshare account is logged in with an active VIP,
+  and `503` with a short reason per check otherwise — the image's Docker
+  `HEALTHCHECK` and Uptime Kuma can use it as is. It reads the account status the
+  app already refreshes hourly, so polling it never calls Webshare; right after
+  start the Webshare check reports `pending` until the first refresh finishes.
+- **Free disk space.** The SABnzbd `fullstatus` call reports real free/total
+  space of the download folders, so Sonarr/Radarr can warn when they fill up.
 - **Dashboard widget.** `GET /stats?apikey=…` returns compact JSON (active/queued
   counts, speed, failed count, Webshare VIP days) for a Homepage `customapi`
   widget or similar.
