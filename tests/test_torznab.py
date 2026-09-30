@@ -291,6 +291,38 @@ def test_year_conflict():
     assert not year_conflict("Kaceri pribehy 2017 04.mkv", 0)            # unknown year
 
 
+def test_junk_reason():
+    from app.torznab import junk_reason
+    assert junk_reason("Superman.2025.1080p.kinorip.x264.encz-dab.tit.mkv")
+    assert junk_reason("Toy Story - Pribeh hracek 5 (CAMRip) (PL dabing z kina).mkv")
+    assert junk_reason("Film 2024 HDTS CZ.avi")
+    assert junk_reason("Film 2024 1080p HQ Clean Audio.mkv")
+    assert junk_reason("Duna 2 - upoutavka CZ.mp4")
+    assert junk_reason("Black Panther 2017 3D Half SBS CZ dab HD 1080p.mkv")
+    assert junk_reason("Avatar S01E03 CZ.mkv", movie=True)
+    # a ".ts" container, words merely containing a token, and normal names pass
+    assert not junk_reason("Hleda se Nemo 2003 CZ.ts")
+    assert not junk_reason("Scooby-Doo a pratele (2004) CZ.mkv")
+    assert not junk_reason("Avatar 2009 1080p CZ dabing.mkv", movie=True)
+    assert not junk_reason("Avatar S01E03 CZ.mkv", movie=False)
+
+
+def test_search_drops_junk(client, fake_webshare, monkeypatch):
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "")
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("ok", "Superman 2025 1080p CZ Dab.mkv", 5_000_000_000),
+        SearchResult("cam", "Superman.2025.1080p.kinorip.x264.encz-dab.tit.mkv", 4_000_000_000),
+        SearchResult("ep", "Superman S01E01 CZ.mkv", 1_000_000_000),
+    ]
+    resp = client.get("/torznab/api", params={"t": "movie", "apikey": "testkey", "q": "Superman"})
+    root = ET.fromstring(resp.content)
+    titles = [i.findtext("title") for i in root.findall("channel/item")]
+    assert len(titles) == 1 and "Dab" in titles[0]
+
+
 def test_file_marker_reads_season():
     from app.torznab import file_marker
     # SxxEyy and 1x05 carry the season; a bare episode number does not.
@@ -299,6 +331,35 @@ def test_file_marker_reads_season():
     assert file_marker("Skvrna", "Skvrna 05 - Bestie.mp4") == (None, 5)
     assert file_marker("Futurama", "Futurama Fialovy Trpaslik special 06.mkv") == (0, 6)
     assert file_marker("Skvrna", "Skvrna - Bestie 1080p.mkv") == (None, None)
+
+
+def test_file_marker_bare_number_must_follow_title():
+    from app.torznab import file_marker
+    # A bare number only counts as the episode right after the title (optionally
+    # behind a year or "dil"/"epizoda") — not an audio-channel "5.1"/"2.0" or a
+    # "Season 2" deep in the name.
+    assert file_marker("Blue", "Blue Planet II One Ocean 1080p AMZN WEB-DL DDP5 1 H 264-NTb.mkv") == (None, None)
+    assert file_marker("Skvrna", "Skvrna - Bestie 1080p AAC 2 0.mkv") == (None, None)
+    assert file_marker("Zaklinac", "Zaklinac Season 2 dabing S02E03.mkv") == (2, 3)
+    # CZ uploads that must keep working
+    assert file_marker("Kaceri pribehy", "Kaceri pribehy 2017 05 dabing.avi") == (None, 5)
+    assert file_marker("Krtek", "Krtek dil 3 - Krtek a autíčko.avi") == (None, 3)
+    assert file_marker("Krtek", "Krtek - 07 - Krtek a paraplicko.avi") == (None, 7)
+
+
+def test_file_marker_rejects_other_show_before_marker():
+    from app.torznab import file_marker
+    titles = ["Bluey", "Blue"]  # TMDB gave the Czech title "Blue"
+    assert file_marker(titles, "Blue Planet II S01E01 One Ocean 1080p.mkv") == (None, None)
+    assert file_marker(titles, "Blue Thunder S01E01 Second Thunder 1080p BluRay.mkv") == (None, None)
+    assert file_marker(titles, "Blue.Lights.S01E01.PL.1080p.WEB-DL.mkv") == (None, None)
+    assert file_marker(titles, "Bluey S01E01 Magic Xylophone 1080p CZ.mkv") == (1, 1)
+    # season/language words, a year and the other names of the show are fine
+    assert file_marker("Zaklinac", "Zaklinac serie dabing S02E03.mkv") == (2, 3)
+    assert file_marker(["DuckTales", "Kaceri pribehy"], "Kaceri pribehy 2017 S01E02 CZ.mkv") == (1, 2)
+    assert file_marker(["The Sleepers", "Bez vedomi"], "Bez.vedomi.S01E01.2019.CZ.mkv") == (1, 1)
+    assert file_marker("House of the Dragon", "House.of.the.Dragon.S01E05.mkv") == (1, 5)
+    assert file_marker("Skvrna", "Skvrna CZ dabing S01E05 1080p.mkv") == (1, 5)
 
 
 def test_search_drops_other_season_with_same_episode(client, fake_webshare, monkeypatch):
@@ -321,6 +382,25 @@ def test_search_drops_other_season_with_same_episode(client, fake_webshare, monk
     root = ET.fromstring(resp.content)
     titles = [it.findtext("title") for it in root.findall("channel/item")]
     assert len(titles) == 1 and "Wronguay" in titles[0]
+
+
+def test_episode_search_ignores_numbers_in_tech_tokens(client, fake_webshare, monkeypatch):
+    """Real-life mis-label: a "Bluey" search also queried the TMDB Czech title
+    "Blue", and "Blue Planet II ... DDP5.1" came back as "Bluey S01E01 - ..." —
+    the "1" of the 5.1 audio tag was read as the episode number."""
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [{"from": "Bluey", "to": "Blue"}])
+    monkeypatch.setattr(settings, "tmdb_token", "")
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("ok", "Bluey S01E01 Magic Xylophone 1080p WEB-DL CZ.mkv", 300_000_000),
+        SearchResult("bp", "Blue Planet II One Ocean 1080p AMZN WEB-DL DDP5 1 H 264-NTb.mkv", 5_300_000_000),
+    ]
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "q": "Bluey", "season": "1", "ep": "1"})
+    root = ET.fromstring(resp.content)
+    titles = [i.findtext("title") for i in root.findall("channel/item")]
+    assert len(titles) == 1 and "Magic Xylophone" in titles[0]
 
 
 def test_season_search_returns_individual_episodes(client, fake_webshare, monkeypatch):
@@ -414,6 +494,32 @@ def test_caps(client):
     tv = root.find("searching/tv-search")
     assert tv.get("available") == "yes"
     assert "season" in tv.get("supportedParams")
+    # Prowlarr only forwards the ids a caps lists: Sonarr v4 sends tmdbid too
+    assert {"tvdbid", "imdbid", "tmdbid"} <= set(tv.get("supportedParams").split(","))
+
+
+def test_tvsearch_by_tmdbid_only(client, fake_webshare, monkeypatch):
+    """A series search carrying only a TMDB id still resolves the title by id."""
+    from app import torznab
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "tok")
+    seen = {}
+
+    async def by_id(token, kind, tmdbid=None, imdbid=None, tvdbid=None):
+        seen.update(kind=kind, tmdbid=tmdbid)
+        return ("Bluey", "", "en", (), 2018)
+
+    async def by_name(token, kind, q):
+        return None
+
+    monkeypatch.setattr(torznab, "tmdb_lookup_by_id", by_id)
+    monkeypatch.setattr(torznab, "tmdb_lookup", by_name)
+    fake_webshare.results = [SearchResult("b1", "Bluey S01E01 1080p CZ.mkv", 300_000_000)]
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "tmdbid": "82728", "season": "1", "ep": "1"})
+    assert seen == {"kind": "tv", "tmdbid": "82728"}
+    assert ET.fromstring(resp.content).findtext("channel/item/title").startswith("Bluey S01E01")
 
 
 def test_invalid_apikey(client):
@@ -488,9 +594,11 @@ def test_feed_download_url_is_ascii(client, fake_webshare):
     assert "%C4%9B" not in url and "vedomi" in url  # transliterated, not encoded
 
 
-def test_search_labels_quality_from_fileinfo(client, fake_webshare):
+def test_search_labels_quality_from_fileinfo(client, fake_webshare, monkeypatch):
     """A CZ file with no resolution in its name gets one appended from
     file_info's height, so *arr can detect the quality."""
+    from app.settings import settings
+    monkeypatch.setattr(settings, "release_tags", True)
     fake_webshare.results = [SearchResult("q1", "Skvrna 05 - Bestie.mp4", 500_000_000)]
     fake_webshare.file_infos = {"q1": {"length": 2600, "width": 1920, "height": 1080,
                                        "format": "H264", "type": "mp4"}}
@@ -498,7 +606,8 @@ def test_search_labels_quality_from_fileinfo(client, fake_webshare):
         "t": "tvsearch", "apikey": "testkey", "q": "Skvrna", "season": "1", "ep": "5",
     })
     title = ET.fromstring(resp.content).findtext("channel/item/title")
-    assert title == "Skvrna S01E05 - Skvrna 05 - Bestie 1080p"
+    # 500 MB over 43 min is a starved 1080p x264 encode
+    assert title == "Skvrna S01E05 - Skvrna 05 - Bestie 1080p x264 LowBitrate"
 
 
 def test_resolution_class():
@@ -517,6 +626,46 @@ def test_resolution_class():
     assert resolution_class(320, 240) == 360
     assert resolution_class(0, 384) == 480        # width unknown
     assert resolution_class(0, 0) == 0
+
+
+def _http_error(status):
+    import httpx
+    req = httpx.Request("POST", "https://webshare.cz/api/file_info/")
+    return httpx.HTTPStatusError("err", request=req, response=httpx.Response(status, request=req))
+
+
+class _FlakyClient:
+    def __init__(self, fail_times, status=403):
+        self.calls = 0
+        self.fail_times = fail_times
+        self.status = status
+
+    async def file_info(self, ident):
+        self.calls += 1
+        if self.calls <= self.fail_times:
+            raise _http_error(self.status)
+        return {"length": 5400, "width": 1920, "height": 1080}
+
+
+def test_file_info_retries_on_403_and_caches():
+    import asyncio
+    from app import torznab
+    c = _FlakyClient(fail_times=2)
+    info = asyncio.run(torznab._file_info(c, "x1"))
+    assert info["height"] == 1080 and c.calls == 3        # two 403s, then success
+    asyncio.run(torznab._file_info(c, "x1"))
+    assert c.calls == 3                                    # served from the cache
+
+
+def test_file_info_fails_open_after_retries():
+    import asyncio
+    from app import torznab
+    c = _FlakyClient(fail_times=99)
+    assert asyncio.run(torznab._file_info(c, "x2")) == {}
+    assert c.calls == 4                                    # 1 try + 3 retries
+    c404 = _FlakyClient(fail_times=99, status=404)
+    assert asyncio.run(torznab._file_info(c404, "x3")) == {}
+    assert c404.calls == 1                                 # not retryable
 
 
 def test_search_labels_odd_height_with_known_class(client, fake_webshare):
@@ -565,11 +714,13 @@ def test_audio_track_language_tags_czech_dub_without_name_marker(client, fake_we
     for it in ET.fromstring(resp.content).findall("channel/item"):
         attrs = {a.get("name"): a.get("value") for a in it.findall(f"{NZNS}attr")}
         got[it.findtext("guid")] = (it.findtext("title"), attrs.get("language"))
+    # (the measured codec is appended; the "2160p" claim measured 1080 is corrected)
     assert got["websharr-dub"] == (
-        "Futurama S08E02 - Futurama Bahnem zapomenute deti 1080p WEB-DL prima+ CZ", "Czech")
+        "Futurama S08E02 - Futurama Bahnem zapomenute deti 1080p WEB-DL prima+ CZ x264", "Czech")
+    # the language attr lists what the tracks say
     assert got["websharr-eng"] == (
-        "Futurama S08E02 - Futurama - Bahnem zapomenute deti 2160p", None)
-    assert got["websharr-subs"] == ("Futurama S08E02 - Futurama 1080p CZ titulky", None)
+        "Futurama S08E02 - Futurama - Bahnem zapomenute deti 1080p x264", "English")
+    assert got["websharr-subs"] == ("Futurama S08E02 - Futurama 1080p CZ titulky x264", "English")
 
 
 def test_audio_language_mapping():
@@ -636,3 +787,242 @@ def test_nzb_download_non_ascii_name(client):
     assert "filename*" not in cd                    # no RFC 5987 form
     assert "Rad" in cd and "Řád" not in cd          # transliterated
     cd.encode("ascii")                              # pure ASCII, header-safe
+
+
+def test_runtime_mismatch():
+    from app.torznab import runtime_mismatch
+    assert not runtime_mismatch(95 * 60, 100, "movie")      # normal cut
+    assert not runtime_mismatch(150 * 60, 100, "movie")     # extended cut
+    assert runtime_mismatch(22 * 60, 81, "movie")           # short special, not the feature
+    assert runtime_mismatch(0 + 60 * 5, 44, "tv")           # 5-minute excerpt
+    assert not runtime_mismatch(88 * 60, 44, "tv")          # double episode
+    assert runtime_mismatch(60 * 60, 7, "tv")               # hour-long doc vs 7-min episode
+    assert not runtime_mismatch(0, 100, "movie")            # unknown length
+    assert not runtime_mismatch(3600, 0, "movie")           # unknown runtime
+
+
+def _patch_tmdb(monkeypatch, torznab, result, minutes):
+    async def by_id(token, kind, tmdbid=None, imdbid=None, tvdbid=None):
+        return result
+
+    async def by_name(token, kind, q):
+        return None
+
+    async def runtime(token, kind, tmdbid=None, imdbid=None, tvdbid=None, season=None, ep=None):
+        return minutes
+
+    monkeypatch.setattr(torznab, "tmdb_lookup_by_id", by_id)
+    monkeypatch.setattr(torznab, "tmdb_lookup", by_name)
+    monkeypatch.setattr(torznab, "tmdb_runtime", runtime)
+
+
+def test_movie_search_drops_files_far_off_the_tmdb_runtime(client, fake_webshare, monkeypatch):
+    """An id search knows the movie's runtime; a file with the right name but a
+    fraction of the length is a special/excerpt ("Toy Story That Time Forgot"
+    for Toy Story), not the movie."""
+    from app import torznab
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "tok")
+    _patch_tmdb(monkeypatch, torznab, ("Toy Story", "", "en", ("Příběh hraček",), 1995), 81)
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("full", "Toy Story 1995 1080p CZ.mkv", 4_000_000_000),
+        SearchResult("spec", "Toy Story That Time Forgot 1080p CZ.mkv", 1_000_000_000),
+        SearchResult("unk", "Toy Story 1995 CZ dabing.avi", 700_000_000),
+    ]
+    info = {"width": 1920, "height": 1080, "format": "H264", "type": "mkv"}
+    fake_webshare.file_infos = {"full": {**info, "length": 81 * 60},
+                                "spec": {**info, "length": 22 * 60},
+                                "unk": {**info, "length": 0}}
+    resp = client.get("/torznab/api", params={
+        "t": "movie", "apikey": "testkey", "tmdbid": "862", "cat": "2000"})
+    root = ET.fromstring(resp.content)
+    titles = [i.findtext("title") for i in root.findall("channel/item")]
+    assert any("1995 1080p" in x for x in titles)
+    assert not any("That Time Forgot" in x for x in titles)
+    assert any("dabing" in x for x in titles)  # unknown length is kept
+
+
+def test_episode_search_drops_other_content_by_runtime(client, fake_webshare, monkeypatch):
+    """A 7-minute Bluey episode vs an hour-long file that merely carries the
+    right marker: the runtime tells them apart even when the name matches."""
+    from app import torznab
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "tok")
+    _patch_tmdb(monkeypatch, torznab, ("Bluey", "", "en", (), 2018), 7)
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("ok", "Bluey S01E01 Magic Xylophone 1080p CZ.mkv", 300_000_000),
+        SearchResult("long", "Bluey S01E01 1080p BluRay Remux CZ.mkv", 10_700_000_000),
+    ]
+    info = {"width": 1920, "height": 1080, "format": "H264", "type": "mkv"}
+    fake_webshare.file_infos = {"ok": {**info, "length": 7 * 60},
+                                "long": {**info, "length": 59 * 60}}
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "tvdbid": "353546", "season": "1", "ep": "1"})
+    root = ET.fromstring(resp.content)
+    titles = [i.findtext("title") for i in root.findall("channel/item")]
+    assert len(titles) == 1 and "Magic Xylophone" in titles[0]
+
+
+def test_runtime_check_fills_the_limit_after_dropping(client, fake_webshare, monkeypatch):
+    """Files dropped by length must not leave *arr with fewer results than it
+    asked for while good ones exist further down the list."""
+    from app import torznab
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "tok")
+    _patch_tmdb(monkeypatch, torznab, ("Toy Story", "", "en", (), 1995), 81)
+    fake_webshare.fuzzy = True
+    info = {"width": 1920, "height": 1080, "format": "H264", "type": "mkv"}
+    fake_webshare.results = [
+        SearchResult("s1", "Toy Story 1995 extra A 1080p CZ.mkv", 9_000_000_000),
+        SearchResult("s2", "Toy Story 1995 extra B 1080p CZ.mkv", 8_000_000_000),
+        SearchResult("f1", "Toy Story 1995 1080p CZ.mkv", 4_000_000_000),
+        SearchResult("f2", "Toy Story 1995 720p CZ.mkv", 2_000_000_000),
+    ]
+    fake_webshare.file_infos = {"s1": {**info, "length": 10 * 60}, "s2": {**info, "length": 12 * 60},
+                                "f1": {**info, "length": 81 * 60}, "f2": {**info, "length": 80 * 60}}
+    resp = client.get("/torznab/api", params={
+        "t": "movie", "apikey": "testkey", "tmdbid": "862", "cat": "2000", "limit": "2"})
+    root = ET.fromstring(resp.content)
+    guids = [i.findtext("guid") for i in root.findall("channel/item")]
+    assert guids == ["websharr-f1", "websharr-f2"]
+
+
+def test_runtime_check_off_without_known_runtime(client, fake_webshare, monkeypatch):
+    """No TMDB runtime (or no token) -> nothing is dropped by length."""
+    from app import torznab
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "tok")
+    _patch_tmdb(monkeypatch, torznab, ("Toy Story", "", "en", (), 1995), 0)
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [SearchResult("spec", "Toy Story 1995 1080p CZ.mkv", 1_000_000_000)]
+    fake_webshare.file_infos = {"spec": {"length": 60, "width": 1920, "height": 1080}}
+    resp = client.get("/torznab/api", params={
+        "t": "movie", "apikey": "testkey", "tmdbid": "862", "cat": "2000"})
+    root = ET.fromstring(resp.content)
+    assert len(root.findall("channel/item")) == 1
+
+
+def _info(**kw):
+    """A file_info record; `audio_languages` follows the tracks, as Webshare reports it."""
+    base = {"length": 6000, "width": 1920, "height": 1080, "format": "H264", "audio": []}
+    base.update(kw)
+    base.setdefault("audio_languages", [a["language"] for a in base["audio"] if a.get("language")])
+    return base
+
+
+def test_audio_token_prefers_dub_track_and_best_codec():
+    from app.torznab import audio_token
+    tracks = [{"format": "TRUEHD", "channels": 8, "language": "ENG"},
+              {"format": "EAC3", "channels": 6, "language": "CZE"},
+              {"format": "AC3", "channels": 6, "language": "SLO"}]
+    assert audio_token({"audio": tracks}) == "TrueHD 7.1"
+    assert audio_token({"audio": tracks}, ("Czech", "Slovak")) == "DDP5.1"
+    assert audio_token({"audio": [{"format": "DTS", "channels": 8, "language": ""}]}) == "DTS-HD MA 7.1"
+    assert audio_token({"audio": [{"format": "DTS", "channels": 6, "language": ""}]}) == "DTS 5.1"
+    assert audio_token({"audio": [{"format": "AAC", "channels": 2, "language": "CZE"}]}) == "AAC2.0"
+    assert audio_token({"audio": []}) == ""
+
+
+def test_quality_tokens():
+    from app.torznab import quality_tokens
+    gb = 1024 ** 3
+    # "4K" name, 1080p inside: the claim is corrected
+    name, tok = quality_tokens("Film 2020 4K CZ", 8 * gb, _info(format="HEVC"))
+    assert name == "Film 2020 1080p CZ" and "x265" in tok
+    # any overstated resolution is corrected, not only 4K (a "1080p" that is 720p inside)
+    assert quality_tokens("Film 2020 1080p CZ", 4 * gb, _info(width=1280, height=720))[0] == \
+        "Film 2020 720p CZ"
+    # 4:3 1440x1080 and cropped 1920x800 are still 1080p, not an overstatement
+    assert quality_tokens("Film 1943 1080p", 6 * gb, _info(width=1440, height=1080))[0] == "Film 1943 1080p"
+    assert quality_tokens("Film 2020 1080p", 6 * gb, _info(width=1920, height=800))[0] == "Film 2020 1080p"
+    # an understated name is left alone (the uploader may have re-encoded it down)
+    assert quality_tokens("Film 2020 720p", 6 * gb, _info())[0] == "Film 2020 720p"
+    # real 2160p but a 1080p-sized bitrate: an upscale
+    _, tok = quality_tokens("Kaceri pribehy 2160p", 2 * gb, _info(width=3840, height=2160, format="HEVC"))
+    assert "Upscaled" in tok
+    # starved 1080p: x264 floor 20, HEVC floor 14 MB/min (6000 s = 100 min)
+    assert "LowBitrate" in quality_tokens("A 1080p", int(1.5 * gb), _info(), tags=True)[1]
+    assert "LowBitrate" not in quality_tokens("A 1080p", int(1.5 * gb), _info(format="HEVC"), tags=True)[1]
+    # uploader's own codec/audio tags win; nothing is added over them
+    _, tok = quality_tokens("A 1080p BluRay x264 DTS-HD MA 7.1", 10 * gb,
+                            _info(audio=[{"format": "AC3", "channels": 6, "language": "ENG"}]))
+    assert tok == []
+    # verified dub vs a name claim the tagged tracks deny
+    cz = [{"format": "AC3", "channels": 6, "language": "CZE"}]
+    en = [{"format": "AC3", "channels": 6, "language": "ENG"}]
+    assert "CZaudio" in quality_tokens("A CZ dabing 1080p", 8 * gb, _info(audio=cz), czech=True, tags=True)[1]
+    assert "CZunverified" in quality_tokens("A CZ dabing 1080p", 8 * gb, _info(audio=en), czech=True,
+                                            tags=True)[1]
+    # Websharr's own tags stay out unless enabled; the standard ones don't
+    _, tok = quality_tokens("A CZ dabing 1080p", int(1.5 * gb), _info(audio=cz), czech=True)
+    assert tok == ["x264", "DD5.1"]
+    # never a bare HEVC/AVC token (with BluRay it reads as BR-DISK)
+    assert quality_tokens("A 1080p BluRay", 8 * gb, _info(format="HEVC"))[1][0] == "x265"
+    assert quality_tokens("A", 1, {}) == ("A", [])
+
+
+def test_upscale_claim_in_the_name():
+    """An AI upscale said in the name gets TRaSH's "Upscaled" token even at 1080p
+    (DuckTales ...1080p.AI.WEB... from an SD master was taken as WEBDL-1080p)."""
+    from app.torznab import quality_tokens, upscale_claim
+    assert upscale_claim("DuckTales.Maid.Of.The.Myth.CZECH.1080p.AI.WEB.H264-ZEPPELiN")
+    assert upscale_claim("Vinnetou.1963.CZ.EN.Blu-Ray.AI.Upscale.2160p.x265")
+    assert upscale_claim("Film 1985 Regrade 1080p") and upscale_claim("Film AIUS 2160p")
+    # titles that merely contain "AI"
+    assert not upscale_claim("Ai Weiwei Never Sorry 2012 1080p")
+    assert not upscale_claim("A.I. Artificial Intelligence 2001 1080p")
+    gb = 1024 ** 3
+    assert "Upscaled" in quality_tokens("DuckTales.S01E05.CZECH.1080p.AI.WEB.H264-ZEPPELiN", 2 * gb, _info())[1]
+    assert quality_tokens("Film 1080p AI WEB", 1, {}) == ("Film 1080p AI WEB", ["Upscaled"])  # probe failed
+    assert "Upscaled" not in quality_tokens("Film 2160p Upscaled", 20 * gb, _info(width=3840, height=2160))[1]
+
+
+def test_feed_languages_torso_and_ids(client, fake_webshare, monkeypatch):
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "release_tags", True)
+    monkeypatch.setattr(settings, "tmdb_token", "")
+    gb = 1024 ** 3
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("multi", "Hleda se Nemo 2003 1080p.mkv", 8 * gb),
+        SearchResult("stub", "Hleda se Nemo 2003 CZ.mp4", 10 * 1024 ** 2),
+    ]
+    fake_webshare.file_infos = {
+        "multi": _info(audio=[{"format": "EAC3", "channels": 6, "language": "CZE"},
+                              {"format": "TRUEHD", "channels": 8, "language": "ENG"}]),
+        "stub": _info(length=8000),  # 10 MB for 133 min: a torso
+    }
+    resp = client.get("/torznab/api", params={
+        "t": "movie", "apikey": "testkey", "q": "Hleda se Nemo", "tmdbid": "12", "imdbid": "0266543"})
+    items = ET.fromstring(resp.content).findall("channel/item")
+    assert len(items) == 1
+    attrs = {a.get("name"): a.get("value") for a in items[0].findall(f"{NZNS}attr")}
+    assert attrs["language"] == "Czech, English"
+    assert attrs["tmdbid"] == "12" and attrs["imdb"] == "0266543"
+    title = items[0].findtext("title")
+    assert "DDP5.1" in title and "CZaudio" in title and "x264" in title
+
+
+def test_czech_title_match_is_not_a_dub_when_tracks_say_otherwise(client, fake_webshare, monkeypatch):
+    """Named after the Czech title, but the only tagged track is English: not a dub."""
+    from app import torznab
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "tok")
+    _patch_tmdb(monkeypatch, torznab, ("Red Dwarf", "", "en", ("Cerveny trpaslik",), 1988), 0)
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [SearchResult("x", "Cerveny trpaslik S01E01 1080p.mkv", 900_000_000)]
+    fake_webshare.file_infos = {"x": _info(length=1800, audio=[{"format": "AC3", "channels": 2,
+                                                                "language": "ENG"}])}
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "tvdbid": "71326", "season": "1", "ep": "1"})
+    item = ET.fromstring(resp.content).find("channel/item")
+    attrs = {a.get("name"): a.get("value") for a in item.findall(f"{NZNS}attr")}
+    assert attrs["language"] == "English" and " CZ" not in item.findtext("title")

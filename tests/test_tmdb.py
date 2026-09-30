@@ -136,3 +136,57 @@ def test_resolve_movie_uses_translation_title():
     client = _RoutedClient([], [{"iso_639_1": "cs", "data": {"title": "Vykoupení z věznice Shawshank"}}])
     assert asyncio.run(tmdb._resolve(client, entry, "movie"))[3] == \
         ("Vykoupení z věznice Shawshank",)
+
+
+class _RecordingClient:
+    """Stands in for httpx.AsyncClient; answers by URL and records every call."""
+
+    calls: list[str] = []
+
+    def __init__(self, *a, **k):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get(self, url, params=None):
+        _RecordingClient.calls.append(url)
+        if url.endswith("/movie/862"):
+            return _Resp({"id": 862, "title": "Toy Story", "original_title": "Toy Story",
+                          "original_language": "en", "release_date": "1995-10-30", "runtime": 81})
+        if url.endswith("/find/tt0114709"):
+            return _Resp({"movie_results": [{"id": 862, "title": "Toy Story"}]})
+        return _Resp({"results": [], "translations": []})
+
+
+def test_runtime_reuses_the_id_lookup(monkeypatch):
+    """lookup_by_id already fetched the movie details for this search: the
+    runtime check must not ask TMDB for them a second time."""
+    from app import tmdb
+    monkeypatch.setattr(tmdb.httpx, "AsyncClient", _RecordingClient)
+    monkeypatch.setattr(tmdb, "_cache", {})
+    monkeypatch.setattr(tmdb, "_resolved", {})
+    monkeypatch.setattr(tmdb, "_runtime_cache", {})
+    _RecordingClient.calls = []
+    asyncio.run(tmdb.lookup_by_id("tok", "movie", tmdbid="862"))
+    before = list(_RecordingClient.calls)
+    assert asyncio.run(tmdb.runtime("tok", "movie", tmdbid="862")) == 81
+    assert _RecordingClient.calls == before
+
+
+def test_runtime_resolves_an_imdb_id_once(monkeypatch):
+    """An IMDb-only search: the TMDB id found by lookup_by_id is reused, so the
+    runtime check needs neither /find nor the details again."""
+    from app import tmdb
+    monkeypatch.setattr(tmdb.httpx, "AsyncClient", _RecordingClient)
+    monkeypatch.setattr(tmdb, "_cache", {})
+    monkeypatch.setattr(tmdb, "_resolved", {})
+    monkeypatch.setattr(tmdb, "_runtime_cache", {})
+    _RecordingClient.calls = []
+    asyncio.run(tmdb.lookup_by_id("tok", "movie", imdbid="tt0114709"))
+    assert asyncio.run(tmdb.runtime("tok", "movie", imdbid="tt0114709")) == 81
+    assert sum("/find/" in c for c in _RecordingClient.calls) == 1
+    assert sum(c.endswith("/movie/862") for c in _RecordingClient.calls) == 1

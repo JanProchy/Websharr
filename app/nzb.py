@@ -62,5 +62,8 @@ def parse_nzb(content: bytes) -> NzbPayload | None:
 
 def sanitize_filename(name: str) -> str:
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name)
-    name = name.replace("..", "_").lstrip(".").strip()
+    # Collapse runs of dots instead of replacing ".." with "_": with the path
+    # separators already gone ".." can't climb out, and "Film 1080p..mkv" (real
+    # Webshare names) must keep its ".mkv" or *arr won't see a video to import.
+    name = re.sub(r"\.{2,}", ".", name).lstrip(".").strip()
     return name or "unnamed"
