@@ -1052,6 +1052,11 @@ def test_movie_title_prefix():
         "A Bug's Life 1998 - "
     # no year from TMDB: no prefix
     assert movie_title_prefix("Coco", 0, ["Coco"], "Coco.mkv") == ""
+    # audio language codes and the uploader's "-Group" are tags, not another film
+    assert movie_title_prefix("Apache Gold", 1963, ["Apache Gold", "Vinnetou"],
+                              "Vinnetou (1963) 1080p Bluray CZ+DE+EN DABING-Buliwyf.mkv") == "Apache Gold 1963 - "
+    # a hyphenated title isn't mistaken for a release group
+    assert movie_title_prefix("Spider-Man", 2002, ["Spider-Man"], "Spider-Man 2002 1080p CZ.mkv") == ""
 
 
 def test_movie_feed_gets_title_prefix(client, fake_webshare, monkeypatch):

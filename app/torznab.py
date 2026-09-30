@@ -647,12 +647,14 @@ def quality_tokens(name: str, size: int, info: dict, *, czech: bool = False,
 # film: language/tech tags and the genre list uploaders like to append.
 _MOVIE_TAIL_WORDS = frozenset("""
 cz sk en eng cze czech slovak cesky slovensky dab dabing dabovano dub dubbed titulky tit sub subs
+de ger german fr fre french it ita es spa pl pol hu hun ru rus jp jap jpn kor chi
 multi multidub dual audio hd fhd uhd full web webdl webrip dl bluray bdrip brrip hdtv tvrip dvdrip
 remux hevc avc aac ac3 eac3 dts dd ddp atmos truehd hdr dv mkv avi mp4 film movie verze version
 extended edition directors cut remastered kolekce collection
 animovany animovana komedie rodinny rodinna dobrodruzny akcni fantasy sci fi drama horor thriller
 krimi western pohadka muzikal romanticky valecny historicky dokument dokumentarni mysteriozni
 """.split())
+_RELEASE_GROUP_RE = re.compile(r"-[A-Za-z0-9]{2,20}$")
 _SEQUEL_RE = re.compile(r"^(?:[2-9]|ii|iii|iv|vi|vii|viii|vol|volume|chapter|part|cast|dil|kapitola)$")
 
 
@@ -674,6 +676,8 @@ def movie_title_prefix(display: str, year: int, titles, name: str) -> str:
     if not display or not year:
         return ""
     stem = name.rsplit(".", 1)[0] if _is_video(name) else name
+    # a trailing "-Group" is the uploader, not part of the title ("… DABING-Buliwyf")
+    stem = _RELEASE_GROUP_RE.sub("", stem)
     ntoks = normalize_text(stem).split()
     dtoks = normalize_text(display).split()
     if ntoks[:len(dtoks)] == dtoks and ntoks[len(dtoks):len(dtoks) + 1] == [str(year)]:
