@@ -589,6 +589,12 @@ async def torznab_api(request: Request):
                 queries.append(v)
     category = CAT_TV if t == "tvsearch" else CAT_MOVIES
 
+    if not queries and (params.get("q") or any(params.get(k) for k in ("tvdbid", "imdbid", "tmdbid"))):
+        # A real search that yields nothing to look for (an id TMDB can't
+        # resolve, a query that normalizes to nothing): no results. The
+        # placeholder below would show up as an unparseable row in *arr's
+        # interactive search for that title.
+        return _render_feed(request, [], category)
     if not queries:
         # Webshare has no RSS/"latest" feed, but Sonarr/Radarr reject an indexer
         # whose capability-test query returns zero items ("no results in the

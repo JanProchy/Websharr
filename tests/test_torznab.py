@@ -475,6 +475,26 @@ def test_empty_query_returns_placeholder_in_requested_category(client):
     assert "S0" not in title and "x0" not in title
 
 
+def test_unresolvable_id_search_returns_nothing_not_the_placeholder(client, fake_webshare, monkeypatch):
+    """A search carrying an id TMDB can't resolve has nothing to look for, but
+    it is a real search: no results, not the RSS-test placeholder (which would
+    show up as an odd row in interactive search for that show)."""
+    from app import torznab
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "tok")
+
+    async def nothing(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(torznab, "tmdb_lookup_by_id", nothing)
+    monkeypatch.setattr(torznab, "tmdb_lookup", nothing)
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "tvdbid": "72860", "season": "1", "ep": "2"})
+    root = ET.fromstring(resp.content)
+    assert root.tag == "rss" and root.findall("channel/item") == []
+
+
 def test_feed_download_url_is_ascii(client, fake_webshare):
     """The download URL must carry no encoded diacritics: Prowlarr proxies via a
     302 and re-emits the decoded URL raw in the Location header, which rejects
