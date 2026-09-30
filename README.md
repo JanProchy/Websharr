@@ -84,6 +84,10 @@ as torrent and its grabs would be sent to a torrent client instead.
 | API Key | copy from Websharr → Settings |
 | Category | `tv` (Sonarr) / `movies` (Radarr) |
 
+Running a second Sonarr/Radarr instance (e.g. a kids library)? Give it its own
+category — add it under Websharr → Settings → Downloads (or `CATEGORIES`) and it
+downloads into its own `<complete>/<category>` folder.
+
 Host names like `websharr` work when everything shares a Docker network; otherwise
 use the LAN IP and port. Also works through **Prowlarr** — add it there as a
 **Generic Newznab** indexer (same URL/API path/key) and let Prowlarr sync it to
@@ -128,8 +132,23 @@ looking the request up in **TMDB**:
 The token is optional — without it, aliases still work and everything else runs
 as normal; you just lose the automatic Czech-title resolution.
 
+With the token, ID-based searches (what Sonarr/Radarr send via Prowlarr) also
+**check each file's duration** against the TMDB runtime of the movie or episode
+and drop files far off it — an hour-long documentary that happens to start with
+a short show's Czech name, a 20-minute special named like the feature, a
+5-minute excerpt. Extended cuts (up to 1.6×) and double episodes (up to 2.6×)
+still pass; files of unknown length are kept.
+
 ## Monitoring and notifications
 
+- **Health check.** `GET /health` (no API key) returns `200` when the download
+  folders are writable and the Webshare account is logged in with an active VIP,
+  and `503` with a short reason per check otherwise — the image's Docker
+  `HEALTHCHECK` and Uptime Kuma can use it as is. It reads the account status the
+  app already refreshes hourly, so polling it never calls Webshare; right after
+  start the Webshare check reports `pending` until the first refresh finishes.
+- **Free disk space.** The SABnzbd `fullstatus` call reports real free/total
+  space of the download folders, so Sonarr/Radarr can warn when they fill up.
 - **Dashboard widget.** `GET /stats?apikey=…` returns compact JSON (active/queued
   counts, speed, failed count, Webshare VIP days) for a Homepage `customapi`
   widget or similar.
@@ -155,7 +174,13 @@ as normal; you just lose the automatic Czech-title resolution.
 | `INCOMPLETE_DIR` | `/downloads/incomplete` | in-progress files |
 | `STATE_FILE` | `/config/state.json` | queue/history persistence |
 | `MAX_CONCURRENT_DOWNLOADS` | `2` | concurrent downloads |
+| `CATEGORIES` | `tv,movies` | SABnzbd categories offered to *arr, each with its own `COMPLETE_DIR/<cat>` folder (UI value wins) |
 | `SEARCH_LIMIT` | `60` | max results from Webshare per query |
+| `SEARCH_CACHE_TTL` | `600` | seconds an identical Webshare search is answered from memory; `0` disables |
+
+Sonarr and Radarr repeat the same searches (per episode, per season, on retry),
+so Websharr answers an identical Webshare search from memory for
+`SEARCH_CACHE_TTL` seconds — faster, and kinder to Webshare's rate limits.
 
 ## How search results are cleaned up
 

@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from . import __version__
 from . import notify
 from .applog import records as log_records
-from .config import config
+from .config import config, parse_categories
 from .downloads import DownloadManager, Job
 from .settings import SESSION_TTL, THEMES, hash_password, settings, verify_password
 from .torznab import (
@@ -184,6 +184,7 @@ async def ui_settings_get(request: Request):
         "max_concurrent": request.app.state.downloads.max_concurrent,
         "notify_urls": settings.notify_urls,
         "notify_vip_days": settings.notify_vip_days,
+        "categories": settings.categories,
         "theme": settings.theme,
         "account": getattr(request.app.state, "account", None),
     }
@@ -260,6 +261,14 @@ async def ui_settings_post(request: Request):
         except (TypeError, ValueError):
             return JSONResponse({"error": "max_concurrent must be a number"}, status_code=400)
         settings.max_concurrent = request.app.state.downloads.set_max_concurrent(n)
+
+    if "categories" in body:
+        try:
+            cats = parse_categories(body.get("categories"))
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        # Creates complete/<cat> right away so *arr's folder check passes.
+        settings.categories = request.app.state.downloads.set_categories(cats)
 
     if "notify_urls" in body:
         settings.notify_urls = _parse_urls(body.get("notify_urls"))

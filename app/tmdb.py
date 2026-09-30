@@ -253,6 +253,7 @@ async def lookup_by_id(token: str, kind: str, tmdbid=None, imdbid=None,
                 entry = await _find(client, imdb, "imdb_id")
             if entry:
                 disp, orig, lang, czech, year = await _resolve(client, entry, kind)
+                _remember(kind, (tmdbid, tvdbid, imdb), entry)
     except (httpx.HTTPError, KeyError, ValueError) as exc:
         logger.warning("TMDB id lookup %s (tmdb=%s tvdb=%s imdb=%s) failed: %s",
                        kind, tmdbid, tvdbid, imdb, exc)
@@ -263,3 +264,89 @@ async def lookup_by_id(token: str, kind: str, tmdbid=None, imdbid=None,
         logger.info("TMDB: %s id(tmdb=%s tvdb=%s imdb=%s) -> display=%r original=%r lang=%r czech=%r year=%r",
                     kind, tmdbid, tvdbid, imdb, disp, orig, lang, czech, year)
     return found
+
+
+# What lookup_by_id already learned, so the runtime check doesn't ask TMDB again:
+# the TMDB id behind an external id, and the runtime from a full details entry
+# (a /find hit is a summary without one).
+_CACHE_MAX = 2000
+_resolved: dict[tuple, int] = {}
+_runtime_cache: dict[tuple, int] = {}
+
+
+def _put(cache: dict, key, value) -> None:
+    if len(cache) >= _CACHE_MAX:
+        cache.pop(next(iter(cache)))
+    cache[key] = value
+
+
+def _entry_runtime(entry: dict, kind: str) -> int:
+    if kind == "movie":
+        return int(entry.get("runtime") or 0)
+    runs = [x for x in entry.get("episode_run_time") or [] if x]
+    return int(runs[0]) if runs else int((entry.get("last_episode_to_air") or {}).get("runtime") or 0)
+
+
+def _remember(kind: str, ids: tuple, entry: dict) -> None:
+    tid = entry.get("id")
+    if not tid:
+        return
+    _put(_resolved, (kind, *ids), tid)
+    minutes = _entry_runtime(entry, kind)
+    if minutes:
+        _put(_runtime_cache, (kind, tid, None, None), minutes)
+
+
+async def runtime(token: str, kind: str, tmdbid=None, imdbid=None, tvdbid=None,
+                  season=None, ep=None) -> int:
+    """Expected running time in minutes — of the movie, or of one episode — or 0
+    when unknown.
+
+    Used to sanity-check Webshare files, whose names alone can't tell a 7-minute
+    Bluey episode from an hour-long "Blue Planet" documentary, a feature from a
+    short special, or a full episode from a 5-minute excerpt. For an episode the
+    episode's own runtime is preferred; a season search (no episode) falls back
+    to the show's typical episode length. Reuses what lookup_by_id fetched for
+    the same search, so a movie usually costs no extra TMDB call.
+    """
+    if not token or kind not in ("tv", "movie"):
+        return 0
+    imdb = _imdb_id(imdbid)
+    if not (tmdbid or imdb or tvdbid):
+        return 0
+    # *arr sends the id as a string, TMDB answers with an int: key caches by int
+    tid = (int(tmdbid) if str(tmdbid).isdigit() else tmdbid) if tmdbid else \
+        _resolved.get((kind, tmdbid, tvdbid, imdb))
+    episode = (season, ep) if kind == "tv" and season is not None and ep is not None else (None, None)
+    if tid and (kind, tid, *episode) in _runtime_cache:
+        return _runtime_cache[(kind, tid, *episode)]
+    minutes = 0
+    try:
+        async with httpx.AsyncClient(timeout=10.0, headers=_headers(token)) as client:
+            if not tid:
+                for ext, source in ((tvdbid, "tvdb_id"), (imdb, "imdb_id")):
+                    if not ext:
+                        continue
+                    r = await client.get(f"{_BASE}/find/{ext}", params={"external_source": source})
+                    hits = (r.json().get(f"{kind}_results") or []) if r.status_code == 200 else []
+                    if hits:
+                        tid = hits[0].get("id")
+                        break
+            if not tid:
+                return 0
+            if episode[0] is not None:
+                r = await client.get(f"{_BASE}/tv/{tid}/season/{int(season)}/episode/{int(ep)}")
+                if r.status_code == 200:
+                    minutes = int(r.json().get("runtime") or 0)
+            if not minutes:
+                minutes = _runtime_cache.get((kind, tid, None, None), 0)
+            if not minutes:
+                r = await client.get(f"{_BASE}/{kind}/{tid}")
+                if r.status_code == 200:
+                    minutes = _entry_runtime(r.json(), kind)
+    except (httpx.HTTPError, KeyError, ValueError, TypeError) as exc:
+        logger.warning("TMDB runtime %s (tmdb=%s tvdb=%s imdb=%s) failed: %s",
+                       kind, tmdbid, tvdbid, imdb, exc)
+        return 0
+    _put(_runtime_cache, (kind, tid, *episode), minutes)
+    return minutes

@@ -28,6 +28,7 @@ from .nzb import build_nzb
 from .settings import settings
 from .tmdb import lookup as tmdb_lookup
 from .tmdb import lookup_by_id as tmdb_lookup_by_id
+from .tmdb import runtime as tmdb_runtime
 from .webshare import SearchResult, WebshareError
 
 logger = logging.getLogger("websharr.torznab")
@@ -132,7 +133,7 @@ def _caps() -> Response:
     searching = ET.SubElement(caps, "searching")
     ET.SubElement(searching, "search", {"available": "yes", "supportedParams": "q"})
     ET.SubElement(searching, "tv-search",
-                  {"available": "yes", "supportedParams": "q,season,ep,tvdbid,imdbid"})
+                  {"available": "yes", "supportedParams": "q,season,ep,tvdbid,imdbid,tmdbid"})
     ET.SubElement(searching, "movie-search",
                   {"available": "yes", "supportedParams": "q,imdbid,tmdbid"})
     cats = ET.SubElement(caps, "categories")
@@ -253,35 +254,99 @@ def resolution_class(width: int, height: int) -> int:
     return max(by_width, by_height)
 
 
-async def _probe(client, results: list[SearchResult]) -> tuple[dict[str, int], dict[str, str]]:
+# file_info is cheap (~30 ms) but Webshare answers HTTP 403 once more than ~6
+# calls run at the same time — and *arr fires several searches in parallel, so a
+# per-request limit wasn't enough: the 403s were swallowed and the files lost
+# their resolution label, audio language and runtime check. One process-wide
+# limit, a short retry on 403/429/5xx, and a cache (a Webshare file never
+# changes under its ident) keep the probe reliable.
+_PROBE_CONCURRENCY = 4
+_PROBE_RETRIES = (0.5, 1.5, 3.0)
+_PROBE_CACHE_MAX = 5000
+_probe_sem: asyncio.Semaphore | None = None
+_probe_cache: dict[str, dict] = {}
+
+
+def _semaphore() -> asyncio.Semaphore:
+    global _probe_sem
+    if _probe_sem is None:
+        _probe_sem = asyncio.Semaphore(_PROBE_CONCURRENCY)
+    return _probe_sem
+
+
+async def _file_info(client, ident: str) -> dict:
+    """file_info with a process-wide concurrency limit, retry and cache; {} on failure."""
+    if ident in _probe_cache:
+        return _probe_cache[ident]
+    for delay in (*_PROBE_RETRIES, None):
+        try:
+            async with _semaphore():
+                info = await client.file_info(ident)
+        except httpx.HTTPStatusError as exc:
+            retryable = exc.response.status_code in (403, 429) or exc.response.status_code >= 500
+            if retryable and delay is not None:
+                await asyncio.sleep(delay)
+                continue
+            logger.warning("file_info %s failed: HTTP %s", ident, exc.response.status_code)
+            return {}
+        except (WebshareError, httpx.HTTPError) as exc:
+            logger.warning("file_info %s failed: %s", ident, exc)
+            return {}
+        if info:
+            if len(_probe_cache) >= _PROBE_CACHE_MAX:
+                _probe_cache.pop(next(iter(_probe_cache)))
+            _probe_cache[ident] = info
+        return info
+    return {}
+
+
+async def _probe(client, results: list[SearchResult], all_files: bool = False
+                 ) -> tuple[dict[str, int], dict[str, str], dict[str, int]]:
     """Fetch file_info for results whose *name* leaves something open, and
-    return (heights, audio): the video height for names without a resolution
-    token — many CZ files ship without one and Sonarr/Radarr reject them as
-    'Unknown' quality otherwise — and "Czech"/"Slovak" for names without a
+    return (heights, audio, lengths): the video height for names without a
+    resolution token — many CZ files ship without one and Sonarr/Radarr reject
+    them as 'Unknown' quality otherwise — "Czech"/"Slovak" for names without a
     language marker whose audio track says so (a TV-rip dub named just
-    "... 1080p WEB-DL prima+")."""
-    need = [r for r in results if not _RES_RE.search(r.name) or not dub_language(r.name)]
+    "... 1080p WEB-DL prima+"), and the duration in seconds of every probed file.
+    `all_files` probes every result (for the runtime check), not just those."""
+    need = results if all_files else \
+        [r for r in results if not _RES_RE.search(r.name) or not dub_language(r.name)]
     if not need:
-        return {}, {}
-    sem = asyncio.Semaphore(6)
+        return {}, {}, {}
 
     async def one(r: SearchResult):
-        async with sem:
-            try:
-                return r, await client.file_info(r.ident)
-            except (WebshareError, httpx.HTTPError):
-                return r, {}
+        return r, await _file_info(client, r.ident)
 
     heights: dict[str, int] = {}
     audio: dict[str, str] = {}
+    lengths: dict[str, int] = {}
     for r, info in await asyncio.gather(*(one(r) for r in need)):
+        if int(info.get("length") or 0) > 0:
+            lengths[r.ident] = int(info["length"])
         height = resolution_class(int(info.get("width") or 0), int(info.get("height") or 0))
         if height and not _RES_RE.search(r.name):
             heights[r.ident] = height
         lang = audio_language(info.get("audio_languages"))
         if lang and not dub_language(r.name):
             audio[r.ident] = lang
-    return heights, audio
+    return heights, audio, lengths
+
+
+# How far a file's duration may stray from the TMDB runtime, as (min, max)
+# fractions. Movies allow extended cuts; episodes allow double episodes.
+_RUNTIME_BOUNDS = {"movie": (0.6, 1.6), "tv": (0.5, 2.6)}
+
+
+def runtime_mismatch(length_s: int, minutes: int, kind: str) -> bool:
+    """True when a file of `length_s` seconds can't be the title TMDB says runs
+    `minutes` — a 7-minute Bluey episode vs an hour of "Blue Planet", a feature
+    vs a short special, a full episode vs a 5-minute excerpt. Unknown on either
+    side is never a mismatch."""
+    if not length_s or not minutes or kind not in _RUNTIME_BOUNDS:
+        return False
+    lo, hi = _RUNTIME_BOUNDS[kind]
+    ratio = length_s / 60 / minutes
+    return ratio < lo or ratio > hi
 
 
 _EP_TOKEN = re.compile(r"^(s\d{1,2}e\d{1,3}|s\d{1,2}|\d{1,2}x\d{1,3}|\d{1,4})$")
@@ -389,6 +454,38 @@ async def expand_titles(t: str, q: str, cat: str | None, *, tvdbid: str | None =
     return titles, display, language, czech_titles, year
 
 
+# Releases that are never the title itself: cinema recordings, trailers and
+# samples, 3D frame-packed versions. Matched on whole normalized tokens (not
+# substrings), after the extension is stripped so a ".ts" container isn't "TS".
+_JUNK_TOKENS = frozenset("""
+cam camrip hdcam ts telesync hdts tc telecine hdtc scr screener dvdscr bdscr webscr
+kinorip pdvd predvd predvdrip r5
+trailer trailers teaser sample ukazka upoutavka upoutavky
+3d sbs hsbs mvc
+""".split())
+_JUNK_PHRASES = (("kino", "rip"), ("hq", "clean", "audio"), ("half", "ou"))
+_MOVIE_EP_RE = re.compile(r"(?<![a-z0-9])s\d{1,2}\s?e\d{1,3}(?!\d)|(?<!\d)\d{1,2}x\d{2}(?!\d)", re.I)
+
+
+def junk_reason(name: str, movie: bool = False) -> str:
+    """Why a file is never the wanted title ("" when it may be): a cinema
+    recording (CAM/TS/TC/screener/kinorip), a trailer or sample, a 3D
+    frame-packed version, or — in a movie search — an episode (a one-word title
+    like "Avatar" otherwise pulls in a whole series)."""
+    stem = name.rsplit(".", 1)[0] if _is_video(name) else name
+    toks = normalize_text(stem).split()
+    hit = next((t for t in toks if t in _JUNK_TOKENS), "")
+    if hit:
+        return hit
+    for phrase in _JUNK_PHRASES:
+        n = len(phrase)
+        if any(tuple(toks[i:i + n]) == phrase for i in range(len(toks) - n + 1)):
+            return " ".join(phrase)
+    if movie and _MOVIE_EP_RE.search(stem):
+        return "episode in a movie search"
+    return ""
+
+
 def year_conflict(name: str, year: int) -> bool:
     """True when every year token in the file name contradicts the title's year.
 
@@ -425,6 +522,18 @@ def matches_query(query, name: str) -> bool:
     return False
 
 
+# Words that may stand between a show title and a bare episode number.
+_EP_WORDS = frozenset({"dil", "cast", "epizoda", "epizody", "ep", "e", "episode"})
+# Words that may stand between a show title and its SxxEyy marker without making
+# it a different show: season words, language/dub markers and technical tags.
+_NEUTRAL_WORDS = frozenset("""
+season seasons series serie serial seria sezona sezony rada rady rocnik dil cast epizoda episode ep
+cz sk en eng cze czech slovak cesky slovensky dab dabing dabovano dub dubbed titulky tit sub subs
+multi dual audio complete kompletni hd fhd uhd full web webdl webrip dl bluray bdrip brrip hdtv
+tvrip dvdrip remux hevc avc aac ac3 eac3 dts dd ddp atmos truehd hdr dv mkv avi mp4 the and
+""".split())
+
+
 def file_marker(query, name: str) -> tuple[int | None, int | None]:
     """(season, episode) implied by the file name, read from the first marker
     after the (matched) show title: SxxEyy, 1x05, or a bare "05" (no season).
@@ -434,22 +543,49 @@ def file_marker(query, name: str) -> tuple[int | None, int | None]:
     (matched on the show name alone). The caller must check both numbers: an
     episode-only match let season-2 files impersonate season 1, and the
     release-name rewrite then hid the real season from *arr entirely.
+
+    A bare number only counts when it follows the title directly — at most
+    behind a year or an episode word ("dil", "epizoda"). Scanning the whole name
+    read the "1" of a "DDP5.1" audio tag as episode 1, so a "Blue" alias turned
+    "Blue Planet II One Ocean ... DDP5.1" into "Bluey S01E01". SxxEyy/1x05 are
+    unambiguous and still count anywhere.
+
+    Any other word between the title and an SxxEyy marker means another show
+    that merely starts with the same word: a TMDB Czech title "Blue" (Bluey)
+    matched "Blue Planet II S01E01", "Blue Thunder S01E01", "Blue Lights
+    S01E01", and the rewrite released them as Bluey. Season/language/technical
+    words and the title's other names are allowed (`_NEUTRAL_WORDS`), and so is
+    anything before a "special" marker (special episodes carry their own name).
     """
     ntoks = normalize_text(name).split()
-    for title in _as_titles(query):
+    titles = _as_titles(query)
+    for title in titles:
         series = _series_tokens(title)
         if series and ntoks[:len(series)] != series:
             continue  # this title isn't the one the file starts with
+        other = {t for x in titles for t in _series_tokens(x)}
         is_special = False
+        bare_ok = True  # still right behind the title (years/episode words only)
+        foreign = False  # a word that can't belong to this show's episode name
         for tk in ntoks[len(series):]:
             if tk in ("special", "specials"):
                 is_special = True
+                bare_ok = True  # "... special 06": the number right after it is the special's
                 continue
             m = re.match(r"^s(\d{1,2})e(\d{1,3})$", tk) or re.match(r"^(\d{1,2})x(\d{1,3})$", tk)
             if m:
+                if foreign and not is_special:
+                    return None, None  # "Blue Planet II S01E01" is not "Blue" S01E01
                 return int(m.group(1)), int(m.group(2))
-            if tk.isdigit() and len(tk) <= 2:  # bare episode number (skip years/1080)
-                return (0 if is_special else None), int(tk)
+            if tk.isdigit() and len(tk) <= 2:
+                if bare_ok:
+                    return (0 if is_special else None), int(tk)
+                continue
+            if tk.isalpha() and len(tk) > 1 and tk not in _NEUTRAL_WORDS and tk not in other:
+                foreign = True
+            if tk in _EP_WORDS or (tk.isdigit() and len(tk) == 4 and 1900 <= int(tk) <= 2099):
+                continue
+            bare_ok = False  # any other word: later bare numbers are tech tokens
         break
     return None, None
 
@@ -621,6 +757,8 @@ async def torznab_api(request: Request):
         for r in results:
             if r.ident in seen or r.password or not _is_video(r.name):
                 continue
+            if junk_reason(r.name, movie=(t == "movie")):
+                continue  # CAM/trailer/3D, or an episode in a movie search
             if not matches_query(titles, r.name):
                 continue  # drop Webshare's loose non-matching fulltext hits
             if year_conflict(r.name, year):
@@ -644,8 +782,29 @@ async def torznab_api(request: Request):
 
     merged.sort(key=lambda r: (-relevance(queries, r.name), -r.size))
     logger.info("Newznab %s q=%r -> %d results", t, q, len(merged))
-    shown = merged[:limit]
-    heights, audio = await _probe(client, shown)
+    # With an exact id, TMDB knows how long the title runs; files far off that
+    # are another title that shares the name, a special or an excerpt.
+    minutes = 0
+    kind = "tv" if t == "tvsearch" else "movie"
+    if settings.tmdb_token and t in ("tvsearch", "movie") and (
+            params.get("tmdbid") or params.get("imdbid") or params.get("tvdbid")):
+        minutes = await tmdb_runtime(settings.tmdb_token, kind, params.get("tmdbid"),
+                                     params.get("imdbid"), params.get("tvdbid"),
+                                     season if t == "tvsearch" else None,
+                                     ep if t == "tvsearch" else None)
+    # Check a few more than asked for, so dropped files don't leave *arr with
+    # fewer results than the limit when more good ones exist.
+    shown = merged[:limit * 2] if minutes else merged[:limit]
+    heights, audio, lengths = await _probe(client, shown, all_files=bool(minutes))
+    if minutes:
+        kept = []
+        for r in shown:
+            if runtime_mismatch(lengths.get(r.ident, 0), minutes, kind):
+                logger.info("Dropped %r: %d min, expected ~%d min",
+                            r.name, lengths[r.ident] // 60, minutes)
+                continue
+            kept.append(r)
+        shown = kept[:limit]
     return _render_feed(request, shown, category, heights=heights, audio=audio,
                         query=display, season=(season if t == "tvsearch" else None), ep=ep,
                         episodes=episodes, language=language, czech_titles=czech_titles)
