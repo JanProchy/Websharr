@@ -41,7 +41,8 @@ async def lifespan(app: FastAPI):
     settings.ensure_api_key()
     settings.apply()
     client = WebshareClient(config.webshare_username, config.webshare_password,
-                            config.webshare_password_digest)
+                            config.webshare_password_digest,
+                            search_cache_ttl=config.search_cache_ttl)
 
     # Legacy settings.json stored the Webshare password in plaintext —
     # convert it to the login digest so the real password leaves the disk.

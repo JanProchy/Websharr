@@ -144,7 +144,7 @@ def _start_app(tmp_path, monkeypatch, file_link_url: str) -> TestClient:
     monkeypatch.setattr(config, "state_file", tmp_path / "state.json")
     monkeypatch.setattr(config, "settings_file", tmp_path / "settings.json")
 
-    def factory(username, password, password_digest=""):
+    def factory(username, password, password_digest="", search_cache_ttl=0):
         fake = FakeWebshareClient(username, password, password_digest)
         fake.file_link_url = file_link_url
         return fake
