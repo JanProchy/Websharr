@@ -20,7 +20,8 @@ class FakeWebshareClient:
 
     fail_login = False  # class-level so tests can flip it for new instances
 
-    def __init__(self, username: str = "", password: str = "", password_digest: str = ""):
+    def __init__(self, username: str = "", password: str = "", password_digest: str = "",
+                 search_cache_ttl: float = 0):
         self.username = username
         self.password = password
         self.password_digest = password_digest

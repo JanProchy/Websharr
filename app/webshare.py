@@ -9,6 +9,7 @@ import hashlib
 import logging
 import time
 import xml.etree.ElementTree as ET
+from collections import OrderedDict
 
 import httpx
 
@@ -16,6 +17,7 @@ logger = logging.getLogger("websharr.webshare")
 
 API_BASE = "https://webshare.cz/api"
 TOKEN_TTL = 30 * 60  # re-login after 30 minutes
+SEARCH_CACHE_SIZE = 500  # cached searches kept; the oldest go first
 
 ITOA64 = "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
@@ -108,7 +110,8 @@ def _text(root: ET.Element, tag: str, default: str = "") -> str:
 
 
 class WebshareClient:
-    def __init__(self, username: str, password: str, password_digest: str = ""):
+    def __init__(self, username: str, password: str, password_digest: str = "",
+                 search_cache_ttl: float = 0):
         self._username = username
         self._password = password
         # sha1(md5crypt(password, salt)) — what /login/ actually consumes.
@@ -117,6 +120,12 @@ class WebshareClient:
         self._token: str | None = None
         self._token_ts: float = 0.0
         self._login_lock = asyncio.Lock()
+        # *arr fire the same search over and over (per episode, season search,
+        # Prowlarr retries) and Webshare answers bursts with 403, so identical
+        # searches are served from memory for search_cache_ttl seconds (0 = off).
+        self._search_ttl = search_cache_ttl
+        self._search_cache: OrderedDict[tuple, tuple[float, tuple[SearchResult, ...]]] = OrderedDict()
+        self._search_inflight: dict[tuple, asyncio.Task] = {}
         self._http = httpx.AsyncClient(
             base_url=API_BASE,
             headers={"Accept": "text/xml; charset=UTF-8"},
@@ -199,16 +208,41 @@ class WebshareClient:
             raise
 
     async def search(self, query: str, limit: int = 60, offset: int = 0) -> list[SearchResult]:
-        root = await self._authed_post(
-            "/search/",
-            {
-                "what": query,
-                "category": "video",
-                "sort": "largest",
-                "limit": str(limit),
-                "offset": str(offset),
-            },
-        )
+        data = {
+            "what": query,
+            "category": "video",
+            "sort": "largest",
+            "limit": str(limit),
+            "offset": str(offset),
+        }
+        if self._search_ttl <= 0:
+            return list(await self._search(data))
+        key = tuple(data.values())
+        hit = self._search_cache.get(key)
+        if hit and time.monotonic() - hit[0] < self._search_ttl:
+            logger.debug("Search cache hit: %r (limit=%d, offset=%d)", query, limit, offset)
+            return list(hit[1])
+        # An identical search already on its way to Webshare: wait for it
+        # instead of sending another. shield() so one caller giving up (client
+        # disconnect) doesn't cancel the request for the others.
+        task = self._search_inflight.get(key)
+        if task is None:
+            task = asyncio.ensure_future(self._search(data))
+            self._search_inflight[key] = task
+            task.add_done_callback(lambda t: self._search_done(key, t))
+        return list(await asyncio.shield(task))
+
+    def _search_done(self, key: tuple, task: asyncio.Task) -> None:
+        self._search_inflight.pop(key, None)
+        if task.cancelled() or task.exception() is not None:
+            return  # errors are never cached; the next call asks Webshare again
+        self._search_cache[key] = (time.monotonic(), task.result())
+        self._search_cache.move_to_end(key)
+        while len(self._search_cache) > SEARCH_CACHE_SIZE:
+            self._search_cache.popitem(last=False)
+
+    async def _search(self, data: dict) -> tuple[SearchResult, ...]:
+        root = await self._authed_post("/search/", data)
         results: list[SearchResult] = []
         for f in root.findall("file"):
             try:
@@ -225,7 +259,8 @@ class WebshareClient:
                 )
             except ValueError:
                 continue
-        return results
+        # A tuple so a cached result can't be changed through a caller's list.
+        return tuple(results)
 
     async def file_link(self, ident: str) -> str:
         root = await self._authed_post("/file_link/", {"ident": ident, "force_https": "1"})
