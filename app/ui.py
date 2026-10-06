@@ -73,6 +73,13 @@ def _set_session(resp: JSONResponse) -> None:
                     max_age=SESSION_TTL, httponly=True, samesite="lax")
 
 
+def _refresh_account(request: Request) -> None:
+    """Wake the account monitor (main._account_monitor) after a credential change."""
+    event = getattr(request.app.state, "account_refresh", None)
+    if event is not None:
+        event.set()
+
+
 def _job_json(job: Job) -> dict:
     data = asdict(job)
     data["job_name"] = job.job_name
@@ -139,6 +146,7 @@ async def ui_setup(request: Request):
     settings.apply()
     request.app.state.webshare.set_credentials(
         config.webshare_username, config.webshare_password, config.webshare_password_digest)
+    _refresh_account(request)
     logger.info("Initial setup completed (user=%s)", username)
 
     resp = JSONResponse({"ok": True})
@@ -216,6 +224,7 @@ async def ui_settings_post(request: Request):
     if not _authorized(request):
         return _unauthorized()
     body = await request.json()
+    credentials = (config.webshare_username, config.webshare_password, config.webshare_password_digest)
 
     if "webshare_username" in body:
         ws_user = (body.get("webshare_username") or "").strip()
@@ -278,6 +287,8 @@ async def ui_settings_post(request: Request):
     settings.apply()
     request.app.state.webshare.set_credentials(
         config.webshare_username, config.webshare_password, config.webshare_password_digest)
+    if (config.webshare_username, config.webshare_password, config.webshare_password_digest) != credentials:
+        _refresh_account(request)
     return {"ok": True, "api_key": config.api_key}
 
 
