@@ -414,6 +414,32 @@ def test_caps(client):
     tv = root.find("searching/tv-search")
     assert tv.get("available") == "yes"
     assert "season" in tv.get("supportedParams")
+    # Prowlarr only forwards the ids a caps lists: Sonarr v4 sends tmdbid too
+    assert {"tvdbid", "imdbid", "tmdbid"} <= set(tv.get("supportedParams").split(","))
+
+
+def test_tvsearch_by_tmdbid_only(client, fake_webshare, monkeypatch):
+    """A series search carrying only a TMDB id still resolves the title by id."""
+    from app import torznab
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "tok")
+    seen = {}
+
+    async def by_id(token, kind, tmdbid=None, imdbid=None, tvdbid=None):
+        seen.update(kind=kind, tmdbid=tmdbid)
+        return ("Bluey", "", "en", (), 2018)
+
+    async def by_name(token, kind, q):
+        return None
+
+    monkeypatch.setattr(torznab, "tmdb_lookup_by_id", by_id)
+    monkeypatch.setattr(torznab, "tmdb_lookup", by_name)
+    fake_webshare.results = [SearchResult("b1", "Bluey S01E01 1080p CZ.mkv", 300_000_000)]
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "tmdbid": "82728", "season": "1", "ep": "1"})
+    assert seen == {"kind": "tv", "tmdbid": "82728"}
+    assert ET.fromstring(resp.content).findtext("channel/item/title").startswith("Bluey S01E01")
 
 
 def test_invalid_apikey(client):
