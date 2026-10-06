@@ -90,3 +90,13 @@ def wait_for(predicate, timeout: float = 5.0) -> bool:
             return True
         time.sleep(0.05)
     return False
+
+
+@pytest.fixture(autouse=True)
+def _fresh_probe_state(monkeypatch):
+    """The file_info cache and limiter are process-wide; start every test clean
+    and without real back-off sleeps."""
+    import app.torznab as torznab
+    torznab._probe_cache.clear()
+    monkeypatch.setattr(torznab, "_probe_sem", None)
+    monkeypatch.setattr(torznab, "_PROBE_RETRIES", (0, 0, 0))

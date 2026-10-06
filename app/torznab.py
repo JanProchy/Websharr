@@ -253,6 +253,52 @@ def resolution_class(width: int, height: int) -> int:
     return max(by_width, by_height)
 
 
+# file_info is cheap (~30 ms) but Webshare answers HTTP 403 once more than ~6
+# calls run at the same time — and *arr fires several searches in parallel, so a
+# per-request limit wasn't enough: the 403s were swallowed and the files lost
+# their resolution label and audio language. One process-wide
+# limit, a short retry on 403/429/5xx, and a cache (a Webshare file never
+# changes under its ident) keep the probe reliable.
+_PROBE_CONCURRENCY = 4
+_PROBE_RETRIES = (0.5, 1.5, 3.0)
+_PROBE_CACHE_MAX = 5000
+_probe_sem: asyncio.Semaphore | None = None
+_probe_cache: dict[str, dict] = {}
+
+
+def _semaphore() -> asyncio.Semaphore:
+    global _probe_sem
+    if _probe_sem is None:
+        _probe_sem = asyncio.Semaphore(_PROBE_CONCURRENCY)
+    return _probe_sem
+
+
+async def _file_info(client, ident: str) -> dict:
+    """file_info with a process-wide concurrency limit, retry and cache; {} on failure."""
+    if ident in _probe_cache:
+        return _probe_cache[ident]
+    for delay in (*_PROBE_RETRIES, None):
+        try:
+            async with _semaphore():
+                info = await client.file_info(ident)
+        except httpx.HTTPStatusError as exc:
+            retryable = exc.response.status_code in (403, 429) or exc.response.status_code >= 500
+            if retryable and delay is not None:
+                await asyncio.sleep(delay)
+                continue
+            logger.warning("file_info %s failed: HTTP %s", ident, exc.response.status_code)
+            return {}
+        except (WebshareError, httpx.HTTPError) as exc:
+            logger.warning("file_info %s failed: %s", ident, exc)
+            return {}
+        if info:
+            if len(_probe_cache) >= _PROBE_CACHE_MAX:
+                _probe_cache.pop(next(iter(_probe_cache)))
+            _probe_cache[ident] = info
+        return info
+    return {}
+
+
 async def _probe(client, results: list[SearchResult]) -> tuple[dict[str, int], dict[str, str]]:
     """Fetch file_info for results whose *name* leaves something open, and
     return (heights, audio): the video height for names without a resolution
@@ -263,14 +309,9 @@ async def _probe(client, results: list[SearchResult]) -> tuple[dict[str, int], d
     need = [r for r in results if not _RES_RE.search(r.name) or not dub_language(r.name)]
     if not need:
         return {}, {}
-    sem = asyncio.Semaphore(6)
 
     async def one(r: SearchResult):
-        async with sem:
-            try:
-                return r, await client.file_info(r.ident)
-            except (WebshareError, httpx.HTTPError):
-                return r, {}
+        return r, await _file_info(client, r.ident)
 
     heights: dict[str, int] = {}
     audio: dict[str, str] = {}
