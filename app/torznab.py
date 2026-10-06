@@ -466,6 +466,18 @@ def matches_query(query, name: str) -> bool:
     return False
 
 
+# Words that may stand between a show title and a bare episode number.
+_EP_WORDS = frozenset({"dil", "cast", "epizoda", "epizody", "ep", "e", "episode"})
+# Words that may stand between a show title and its SxxEyy marker without making
+# it a different show: season words, language/dub markers and technical tags.
+_NEUTRAL_WORDS = frozenset("""
+season seasons series serie serial seria sezona sezony rada rady rocnik dil cast epizoda episode ep
+cz sk en eng cze czech slovak cesky slovensky dab dabing dabovano dub dubbed titulky tit sub subs
+multi dual audio complete kompletni hd fhd uhd full web webdl webrip dl bluray bdrip brrip hdtv
+tvrip dvdrip remux hevc avc aac ac3 eac3 dts dd ddp atmos truehd hdr dv mkv avi mp4 the and
+""".split())
+
+
 def file_marker(query, name: str) -> tuple[int | None, int | None]:
     """(season, episode) implied by the file name, read from the first marker
     after the (matched) show title: SxxEyy, 1x05, or a bare "05" (no season).
@@ -475,22 +487,49 @@ def file_marker(query, name: str) -> tuple[int | None, int | None]:
     (matched on the show name alone). The caller must check both numbers: an
     episode-only match let season-2 files impersonate season 1, and the
     release-name rewrite then hid the real season from *arr entirely.
+
+    A bare number only counts when it follows the title directly — at most
+    behind a year or an episode word ("dil", "epizoda"). Scanning the whole name
+    read the "1" of a "DDP5.1" audio tag as episode 1, so a "Blue" alias turned
+    "Blue Planet II One Ocean ... DDP5.1" into "Bluey S01E01". SxxEyy/1x05 are
+    unambiguous and still count anywhere.
+
+    Any other word between the title and an SxxEyy marker means another show
+    that merely starts with the same word: a TMDB Czech title "Blue" (Bluey)
+    matched "Blue Planet II S01E01", "Blue Thunder S01E01", "Blue Lights
+    S01E01", and the rewrite released them as Bluey. Season/language/technical
+    words and the title's other names are allowed (`_NEUTRAL_WORDS`), and so is
+    anything before a "special" marker (special episodes carry their own name).
     """
     ntoks = normalize_text(name).split()
-    for title in _as_titles(query):
+    titles = _as_titles(query)
+    for title in titles:
         series = _series_tokens(title)
         if series and ntoks[:len(series)] != series:
             continue  # this title isn't the one the file starts with
+        other = {t for x in titles for t in _series_tokens(x)}
         is_special = False
+        bare_ok = True  # still right behind the title (years/episode words only)
+        foreign = False  # a word that can't belong to this show's episode name
         for tk in ntoks[len(series):]:
             if tk in ("special", "specials"):
                 is_special = True
+                bare_ok = True  # "... special 06": the number right after it is the special's
                 continue
             m = re.match(r"^s(\d{1,2})e(\d{1,3})$", tk) or re.match(r"^(\d{1,2})x(\d{1,3})$", tk)
             if m:
+                if foreign and not is_special:
+                    return None, None  # "Blue Planet II S01E01" is not "Blue" S01E01
                 return int(m.group(1)), int(m.group(2))
-            if tk.isdigit() and len(tk) <= 2:  # bare episode number (skip years/1080)
-                return (0 if is_special else None), int(tk)
+            if tk.isdigit() and len(tk) <= 2:
+                if bare_ok:
+                    return (0 if is_special else None), int(tk)
+                continue
+            if tk.isalpha() and len(tk) > 1 and tk not in _NEUTRAL_WORDS and tk not in other:
+                foreign = True
+            if tk in _EP_WORDS or (tk.isdigit() and len(tk) == 4 and 1900 <= int(tk) <= 2099):
+                continue
+            bare_ok = False  # any other word: later bare numbers are tech tokens
         break
     return None, None
 
