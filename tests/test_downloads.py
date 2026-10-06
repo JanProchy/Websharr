@@ -232,6 +232,22 @@ def test_ensure_dirs_creates_category_folders(tmp_path, monkeypatch):
         assert (tmp_path / "incomplete").is_dir()
 
 
+def test_ensure_dirs_follows_configured_categories(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "categories", ["tv", "tv-kids"])
+    with _start_app(tmp_path, monkeypatch, "http://127.0.0.1:1/x"):
+        assert (tmp_path / "complete" / "tv-kids").is_dir()
+        assert not (tmp_path / "complete" / "movies").exists()
+
+
+def test_categories_env_parsing():
+    from app.config import parse_categories
+    assert parse_categories("tv,movies") == ["tv", "movies"]
+    assert parse_categories(" TV , *, tv-kids,\nmovies_4k,") == ["tv", "tv-kids", "movies_4k"]
+    for bad in ("tv,tv", "tv/kids", "a" * 41):
+        with pytest.raises(ValueError):
+            parse_categories(bad)
+
+
 def test_retry_unknown_job(client):
     resp = client.get("/sabnzbd/api", params={
         "mode": "retry", "apikey": "testkey", "value": "SABnzbd_nzo_nonexistent",

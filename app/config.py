@@ -4,6 +4,32 @@ import os
 import re
 from pathlib import Path
 
+# SABnzbd category names: also used as folder names under COMPLETE_DIR.
+CATEGORY_RE = re.compile(r"^[a-z0-9_-]{1,40}$")
+
+
+def parse_categories(value) -> list[str]:
+    """Validate a category list (comma/newline separated string or list).
+
+    Names are lowercased; `*` (the SABnzbd default category) is implicit and
+    dropped. Raises ValueError on an invalid or duplicate name.
+    """
+    if isinstance(value, str):
+        value = re.split(r"[,\n]", value)
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("Categories must be a list or a comma-separated string")
+    cats: list[str] = []
+    for raw in value:
+        name = str(raw).strip().lower()
+        if not name or name == "*":
+            continue
+        if not CATEGORY_RE.match(name):
+            raise ValueError(f"Invalid category '{name}': use a-z, 0-9, - and _ (max 40 characters)")
+        if name in cats:
+            raise ValueError(f"Duplicate category '{name}'")
+        cats.append(name)
+    return cats
+
 
 class Config:
     def __init__(self) -> None:
@@ -25,6 +51,9 @@ class Config:
         self.state_file = Path(os.environ.get("STATE_FILE", "/config/state.json"))
         self.settings_file = Path(os.environ.get("SETTINGS_FILE", "/config/settings.json"))
         self.max_concurrent = int(os.environ.get("MAX_CONCURRENT_DOWNLOADS", "2"))
+        # SABnzbd categories offered to Sonarr/Radarr (each gets COMPLETE_DIR/<cat>);
+        # the UI value overrides this.
+        self.categories = parse_categories(os.environ.get("CATEGORIES", "tv,movies"))
         self.search_limit = int(os.environ.get("SEARCH_LIMIT", "60"))
         self.log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
 
