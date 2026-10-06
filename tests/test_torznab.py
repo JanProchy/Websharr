@@ -291,6 +291,40 @@ def test_year_conflict():
     assert not year_conflict("Kaceri pribehy 2017 04.mkv", 0)            # unknown year
 
 
+def test_junk_reason():
+    from app.torznab import junk_reason
+    assert junk_reason("Superman.2025.1080p.kinorip.x264.encz-dab.tit.mkv")
+    assert junk_reason("Toy Story - Pribeh hracek 5 (CAMRip) (PL dabing z kina).mkv")
+    assert junk_reason("Film 2024 HDTS CZ.avi")
+    assert junk_reason("Film 2024 1080p HQ Clean Audio.mkv")
+    assert junk_reason("Duna 2 - upoutavka CZ.mp4")
+    assert junk_reason("Black Panther 2017 3D Half SBS CZ dab HD 1080p.mkv")
+    assert junk_reason("Avatar S01E03 CZ.mkv", movie=True)
+    # an unfinished work print, not the film (Radarr took one as WEBDL-1080p)
+    assert junk_reason("The.Amazing.Digital.Circus.The.Last.Act.2026.1080p.WORKPRiNT.WEB-DL.x264-DKS.mkv")
+    # a ".ts" container, words merely containing a token, and normal names pass
+    assert not junk_reason("Hleda se Nemo 2003 CZ.ts")
+    assert not junk_reason("Scooby-Doo a pratele (2004) CZ.mkv")
+    assert not junk_reason("Avatar 2009 1080p CZ dabing.mkv", movie=True)
+    assert not junk_reason("Avatar S01E03 CZ.mkv", movie=False)
+
+
+def test_search_drops_junk(client, fake_webshare, monkeypatch):
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "")
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("ok", "Superman 2025 1080p CZ Dab.mkv", 5_000_000_000),
+        SearchResult("cam", "Superman.2025.1080p.kinorip.x264.encz-dab.tit.mkv", 4_000_000_000),
+        SearchResult("ep", "Superman S01E01 CZ.mkv", 1_000_000_000),
+    ]
+    resp = client.get("/torznab/api", params={"t": "movie", "apikey": "testkey", "q": "Superman"})
+    root = ET.fromstring(resp.content)
+    titles = [i.findtext("title") for i in root.findall("channel/item")]
+    assert len(titles) == 1 and "Dab" in titles[0]
+
+
 def test_file_marker_reads_season():
     from app.torznab import file_marker
     # SxxEyy and 1x05 carry the season; a bare episode number does not.
