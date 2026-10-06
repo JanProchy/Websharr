@@ -26,6 +26,8 @@ class Config:
         self.settings_file = Path(os.environ.get("SETTINGS_FILE", "/config/settings.json"))
         self.max_concurrent = int(os.environ.get("MAX_CONCURRENT_DOWNLOADS", "2"))
         self.search_limit = int(os.environ.get("SEARCH_LIMIT", "60"))
+        # Seconds identical Webshare searches are answered from memory; 0 = off.
+        self.search_cache_ttl = int(os.environ.get("SEARCH_CACHE_TTL", "600"))
         self.log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
 
 
