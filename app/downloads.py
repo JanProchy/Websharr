@@ -23,6 +23,10 @@ logger = logging.getLogger("websharr.downloads")
 
 CHUNK_SIZE = 1024 * 1024
 HISTORY_CAP = 500  # keep this many completed/failed records in the UI history
+# A connection dropped mid-file is resumed from the partial file this many
+# times (waiting RESUME_DELAYS seconds) before the job fails.
+RESUME_ATTEMPTS = 5
+RESUME_DELAYS = (5, 15, 30, 60, 120)
 
 
 def describe_error(exc: BaseException) -> str:
@@ -349,23 +353,43 @@ class DownloadManager:
         offset = target.stat().st_size if target.exists() else 0
 
         async with httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(30.0, read=120.0)) as http:
+            interruptions = 0
             while True:
                 headers = {"Range": f"bytes={offset}-"} if offset else {}
-                async with http.stream("GET", url, headers=headers) as resp:
-                    if offset and resp.status_code == 416:
-                        # Partial file no longer matches the remote; start over.
-                        target.unlink(missing_ok=True)
-                        offset = 0
-                        continue
-                    if offset and resp.status_code != 206:
-                        offset = 0  # server ignored the Range header
-                    resp.raise_for_status()
-                    total = _total_size(resp, offset)
-                    if total:
-                        job.size = total
-                    if offset:
-                        logger.info("Resuming %s from %d bytes", job.nzo_id, offset)
-                    await self._stream_to_file(job, resp, target, offset)
+                try:
+                    async with http.stream("GET", url, headers=headers) as resp:
+                        if offset and resp.status_code == 416:
+                            # Partial file no longer matches the remote; start over.
+                            target.unlink(missing_ok=True)
+                            offset = 0
+                            continue
+                        if offset and resp.status_code != 206:
+                            offset = 0  # server ignored the Range header
+                        resp.raise_for_status()
+                        total = _total_size(resp, offset)
+                        if total:
+                            job.size = total
+                        if offset:
+                            logger.info("Resuming %s from %d bytes", job.nzo_id, offset)
+                        await self._stream_to_file(job, resp, target, offset)
+                    if total and job.downloaded < total:
+                        raise httpx.RemoteProtocolError(
+                            f"stream ended at {job.downloaded} of {total} bytes")
+                except httpx.TransportError as exc:
+                    # A dropped connection mid-file ("peer closed connection without
+                    # sending complete message body") is common on multi-GB files.
+                    # Failing it made *arr blocklist a good release and throw the
+                    # partial file away; continue from what is on disk instead, with
+                    # a fresh link (the old one may have expired).
+                    interruptions += 1
+                    if interruptions > RESUME_ATTEMPTS:
+                        raise
+                    offset = target.stat().st_size if target.exists() else 0
+                    logger.warning("Download %s interrupted at %d bytes (%s); resuming, attempt %d/%d",
+                                   job.nzo_id, offset, exc, interruptions, RESUME_ATTEMPTS)
+                    await asyncio.sleep(RESUME_DELAYS[min(interruptions, len(RESUME_DELAYS)) - 1])
+                    url = await self._client.file_link(job.ident)
+                    continue
                 break
 
         final_dir = self._complete_dir / job.category / job.job_name
