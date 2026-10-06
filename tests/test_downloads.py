@@ -116,7 +116,34 @@ def test_pause_resume(tmp_path, monkeypatch):
             assert wait_for(lambda: manager.get(nzo_id).status == "completed", timeout=10)
             job = manager.get(nzo_id)
 
-        assert (Path(job.storage) / "Zaklinac.raw.mkv").read_bytes() == payload
+        assert (Path(job.storage) / "Zaklinac S01E01.mkv").read_bytes() == payload
+    finally:
+        httpd.shutdown()
+
+
+def test_finished_file_is_named_after_the_release(client, fake_webshare):
+    """A raw Czech name ("Kaceri pribehy S01E18 ...") doesn't map to the show in
+    Sonarr, which parses the file before the folder: the file takes the release
+    title and keeps its extension; without a title the raw name stays."""
+    payload = b"kachnosaurus" * 1000
+    httpd, _ = _serve(payload, support_range=True)
+    try:
+        fake_webshare.file_link_url = f"http://127.0.0.1:{httpd.server_address[1]}/f.mkv"
+        manager = app.state.downloads
+
+        def add(ident, name, nzb_name):
+            nzb = build_nzb(ident, name, len(payload))
+            resp = client.post("/sabnzbd/api", params={"mode": "addfile", "apikey": "testkey", "cat": "tv"},
+                               files={"nzbfile": (nzb_name, nzb.encode(), "application/x-nzb")})
+            return resp.json()["nzo_ids"][0]
+
+        t_id = add("k18", "Kaceri pribehy S01E18 Kachnosaurus.mkv",
+                   "DuckTales S01E18 - Kaceri pribehy Kachnosaurus CZ.nzb")
+        r_id = add("k19", "Kaceri pribehy S01E19.avi", ".nzb")  # no title: the raw name stays
+        assert wait_for(lambda: manager.get(t_id).status == "completed" and manager.get(r_id).status == "completed")
+        titled, raw = manager.get(t_id), manager.get(r_id)
+        assert (Path(titled.storage) / "DuckTales S01E18 - Kaceri pribehy Kachnosaurus CZ.mkv").read_bytes() == payload
+        assert (Path(raw.storage) / "Kaceri pribehy S01E19.avi").read_bytes() == payload
     finally:
         httpd.shutdown()
 
@@ -195,7 +222,8 @@ def test_retry_failed_job(client, fake_webshare, tmp_path):
         assert resp.json()["status"] is True
         assert wait_for(lambda: (j := manager.get(nzo_id)) and j.status == "completed")
         job = manager.get(nzo_id)
-        assert (Path(job.storage) / "Retry.Me.2024.mkv").read_bytes() == payload
+        # the file takes the uploaded NZB's name (the release title), keeping its extension
+        assert (Path(job.storage) / "x.mkv").read_bytes() == payload
     finally:
         httpd.shutdown()
 

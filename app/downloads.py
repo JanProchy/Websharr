@@ -69,6 +69,18 @@ class Job:
     sab_hidden: bool = False
 
     @property
+    def file_name(self) -> str:
+        """Name of the finished file: the release title with the original
+        extension. The raw Webshare name ("Kaceri pribehy S01E18 Kachnosaurus.mkv")
+        carries a Czech series title Sonarr can't map to the show, and it parses
+        the file before the folder, so the import stalled even though the folder
+        said "DuckTales S01E18 - ..."."""
+        if not self.title:
+            return self.name
+        ext = self.name.rsplit(".", 1)[1] if "." in self.name else ""
+        return f"{self.title}.{ext}" if ext else self.title
+
+    @property
     def job_name(self) -> str:
         """Name shown to *arr and used for the download folder."""
         if self.title:
@@ -370,7 +382,7 @@ class DownloadManager:
 
         final_dir = self._complete_dir / job.category / job.job_name
         final_dir.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(target), final_dir / job.name)
+        shutil.move(str(target), final_dir / job.file_name)
         shutil.rmtree(work_dir, ignore_errors=True)
         job.storage = str(final_dir)
         job.size = max(job.size, job.downloaded)
