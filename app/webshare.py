@@ -247,6 +247,7 @@ class WebshareClient:
 
         return {
             "length": _int("length"),  # seconds
+            "size": _int("size"),      # bytes, 0 when not reported
             "width": _int("width"),
             "height": _int("height"),
             "format": _text(root, "format", ""),  # video codec, e.g. H264

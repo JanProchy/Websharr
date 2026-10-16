@@ -23,5 +23,6 @@ def test_file_info_reads_audio_languages(monkeypatch):
     monkeypatch.setattr(client, "_authed_post", fake_post)
     info = asyncio.run(client.file_info("abc"))
     assert info["height"] == 1080
+    assert info["size"] == 0  # not in this response: unknown
     # Untagged tracks are skipped; codes are upper-cased.
     assert info["audio_languages"] == ["CZE", "ENG"]

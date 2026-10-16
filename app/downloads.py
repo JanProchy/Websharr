@@ -8,10 +8,12 @@ the incomplete dir via an HTTP Range request.
 import asyncio
 import json
 import logging
+import re
 import shutil
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 import httpx
@@ -45,6 +47,50 @@ def _total_size(resp: httpx.Response, offset: int) -> int:
     return int(resp.headers.get("content-length", "0") or 0)
 
 
+# Duplicate fallback (opt-in, settings.duplicate_fallback): a grab may name up
+# to five copies of its file (torznab.find_copies) to download instead when the
+# file itself is gone. They are kept in a sidecar in the job's incomplete
+# folder, never on the Job: an older Websharr skips a state.json record with a
+# field it doesn't know, so a new field would lose the queue and history on a
+# rollback. The folder goes away with the job (completion, delete), and the
+# grab itself — ident, nzo_id, name — never changes; a substitution is logged.
+FALLBACK_FILE = ".websharr-fallback.json"  # job names never start with a dot
+MAX_COPIES = 5
+COPY_LENGTH_TOLERANCE = 1  # s
+_IDENT_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")  # also safe as a file name part
+
+# The retry/error contract of the fallback. A copy is tried only when the
+# grabbed file itself is gone: /file_link/ says so (allowlist below), or the
+# download answers 404/410 before a byte is written. Everything else — login,
+# VIP, credit, rate limits (HTTP 403/429), network or server errors, unknown
+# messages — is not the file's fault: the job fails as without copies.
+_LINK_GONE = re.compile(r"temporarily unavailable|not found|deleted|removed|does not exist", re.I)
+_ACCOUNT = re.compile(r"login|logged|password|credential|vip|credit|quota|limit|premium|token", re.I)
+_GONE_STATUS = (404, 410)
+
+
+def link_gone(exc: BaseException) -> bool:
+    """True when file_link failed because this one file is unavailable, not
+    because of the account or the connection (see the contract above)."""
+    text = str(exc) if isinstance(exc, WebshareError) else ""
+    if "/file_link/" not in text:
+        return False  # login/salt errors, an empty link, HTTP errors of the API
+    reason = text.split("/file_link/", 1)[1]
+    return bool(_LINK_GONE.search(reason)) and not _ACCOUNT.search(reason)
+
+
+class _Gone(Exception):
+    """The file being tried is gone (per-file error); its cause says why."""
+
+
+class _CopyRejected(Exception):
+    """A copy failed its re-check; it is skipped without writing a byte."""
+
+
+def _has_bytes(path: Path) -> bool:
+    return path.exists() and path.stat().st_size > 0
+
+
 @dataclass
 class Job:
     nzo_id: str
@@ -76,10 +122,16 @@ class Job:
         return self.name.rsplit(".", 1)[0] if "." in self.name else self.name
 
 
+_JOB_FIELDS = {f.name for f in fields(Job)}
+
+
 class DownloadManager:
     def __init__(self, client: WebshareClient, complete_dir: Path, incomplete_dir: Path,
-                 state_file: Path, max_concurrent: int = 2, notify=None):
+                 state_file: Path, max_concurrent: int = 2, notify=None,
+                 fallback: Callable[[], bool] | None = None):
         self._client = client
+        # Whether the duplicate fallback is on (read at grab and download time).
+        self._fallback = fallback or (lambda: False)
         self._complete_dir = complete_dir
         self._incomplete_dir = incomplete_dir
         self._state_file = state_file
@@ -121,6 +173,10 @@ class DownloadManager:
             return
         for item in raw.get("jobs", []):
             item.pop("speed", None)
+            # Fields this version doesn't know (a newer or experimental build's,
+            # e.g. the `alternates` an early duplicate-fallback draft wrote) are
+            # dropped rather than losing the whole job.
+            item = {k: v for k, v in item.items() if k in _JOB_FIELDS}
             try:
                 job = Job(**item)
             except TypeError:
@@ -146,7 +202,8 @@ class DownloadManager:
 
     # -- public API --------------------------------------------------------
 
-    def add(self, ident: str, name: str, size: int, category: str, title: str = "") -> Job:
+    def add(self, ident: str, name: str, size: int, category: str, title: str = "",
+            alternates: list[str] | None = None, length: int = 0) -> Job:
         job = Job(
             nzo_id=f"SABnzbd_nzo_{uuid.uuid4().hex[:12]}",
             ident=ident,
@@ -155,6 +212,12 @@ class DownloadManager:
             size=size,
             title=sanitize_filename(title) if title else "",
         )
+        # Copies are only usable with the size and length they were matched on.
+        copies = list(dict.fromkeys(
+            a for a in alternates or [] if a != ident and _IDENT_RE.match(a)))[:MAX_COPIES]
+        if copies and size > 0 and length > 0 and self._fallback():
+            self._write_fallback(job, {"ident": ident, "size": size, "length": length,
+                                       "alternates": copies})
         self._jobs[job.nzo_id] = job
         self._save_state()
         logger.info("Queued download %s -> %s (cat=%s)", ident, job.name, job.category)
@@ -337,15 +400,31 @@ class DownloadManager:
             self.delete(job.nzo_id)
 
     async def _download(self, job: Job) -> None:
-        # No retry on a link error: Webshare's "File temporarily unavailable" does
-        # not recover in practice. Failing right away frees the slot and lets *arr
-        # blocklist the release (see torznab._pub_date) and grab another one.
-        url = await self._client.file_link(job.ident)
-
         work_dir = self._incomplete_path(job)
-        work_dir.mkdir(parents=True, exist_ok=True)
         target = work_dir / job.name
+        fallback = self._read_fallback(job) if self._fallback() else None
+        if fallback is None:
+            # No retry on a link error: Webshare's "File temporarily unavailable"
+            # does not recover in practice. Failing right away frees the slot and
+            # lets *arr blocklist the release (see torznab._pub_date) and grab
+            # another one.
+            url = await self._client.file_link(job.ident)
+            work_dir.mkdir(parents=True, exist_ok=True)
+            await self._fetch(job, url, target)
+        else:
+            target = await self._download_or_copy(job, fallback, target)
 
+        final_dir = self._complete_dir / job.category / job.job_name
+        final_dir.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(target), final_dir / job.name)
+        shutil.rmtree(work_dir, ignore_errors=True)
+        job.storage = str(final_dir)
+        job.size = max(job.size, job.downloaded)
+
+    async def _fetch(self, job: Job, url: str, target: Path, expect_size: int = 0) -> None:
+        """Download `url` into `target`, resuming what it already holds. With
+        `expect_size`, a response that doesn't announce exactly that size is
+        refused (_CopyRejected) before a byte is written."""
         offset = target.stat().st_size if target.exists() else 0
 
         async with httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(30.0, read=120.0)) as http:
@@ -361,6 +440,8 @@ class DownloadManager:
                         offset = 0  # server ignored the Range header
                     resp.raise_for_status()
                     total = _total_size(resp, offset)
+                    if expect_size and total != expect_size:
+                        raise _CopyRejected(f"download is {total} bytes, expected {expect_size}")
                     if total:
                         job.size = total
                     if offset:
@@ -368,12 +449,115 @@ class DownloadManager:
                     await self._stream_to_file(job, resp, target, offset)
                 break
 
-        final_dir = self._complete_dir / job.category / job.job_name
-        final_dir.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(target), final_dir / job.name)
-        shutil.rmtree(work_dir, ignore_errors=True)
-        job.storage = str(final_dir)
-        job.size = max(job.size, job.downloaded)
+    # -- duplicate fallback (see FALLBACK_FILE) ------------------------------
+
+    def _fallback_path(self, job: Job) -> Path:
+        return self._incomplete_path(job) / FALLBACK_FILE
+
+    def _write_fallback(self, job: Job, data: dict) -> None:
+        path = self._fallback_path(job)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data))
+            tmp.replace(path)
+        except OSError as exc:
+            logger.warning("Could not write the copies of %s: %s", job.nzo_id, exc)
+
+    def _read_fallback(self, job: Job) -> dict | None:
+        """The job's copies, or None when it has none (or they don't fit it)."""
+        try:
+            data = json.loads(self._fallback_path(job).read_text())
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict) or data.get("ident") != job.ident:
+            return None
+        copies = data.get("alternates")
+        if not (isinstance(copies, list) and copies
+                and all(isinstance(a, str) and _IDENT_RE.match(a) for a in copies)):
+            return None
+        if not all(isinstance(data.get(k), int) and data[k] > 0 for k in ("size", "length")):
+            return None
+        return data
+
+    @staticmethod
+    def _copy_part(work_dir: Path, ident: str) -> Path:
+        # A copy's bytes never go into the job's own file name, so neither this
+        # code nor an older Websharr can resume one upload with another's bytes.
+        return work_dir / f".websharr-copy-{ident}.part"
+
+    async def _download_or_copy(self, job: Job, fallback: dict, target: Path) -> Path:
+        """Download the grabbed file, or — when it is gone and nothing is on
+        disk yet — the first copy that passes a re-check. Each copy is tried at
+        most once per attempt. Returns the file holding the download."""
+        work_dir = target.parent
+        # Bytes on disk are only ever continued from the upload they came from.
+        if _has_bytes(target):
+            url = await self._client.file_link(job.ident)
+            await self._fetch(job, url, target)
+            return target
+        using = fallback.get("using", "")
+        if using and _has_bytes(part := self._copy_part(work_dir, using)):
+            url = await self._client.file_link(using)
+            try:
+                await self._fetch(job, url, part, expect_size=fallback["size"])
+            except _CopyRejected as exc:
+                raise WebshareError(f"Copy {using} no longer matches: {exc}") from exc
+            return part
+
+        first: BaseException | None = None  # why the grabbed file is gone
+        copies = fallback["alternates"]
+        for ident in (job.ident, *copies):
+            is_copy = ident != job.ident
+            dest = self._copy_part(work_dir, ident) if is_copy else target
+            try:
+                if is_copy:
+                    await self._check_copy(ident, fallback)
+                try:
+                    url = await self._client.file_link(ident)
+                except WebshareError as exc:
+                    if not link_gone(exc):
+                        raise  # the account or the connection, not the file
+                    raise _Gone() from exc
+                work_dir.mkdir(parents=True, exist_ok=True)
+                if is_copy:
+                    # Before the first byte, so a restart resumes this copy only.
+                    self._write_fallback(job, {**fallback, "using": ident})
+                try:
+                    await self._fetch(job, url, dest, expect_size=fallback["size"] if is_copy else 0)
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code not in _GONE_STATUS or _has_bytes(dest):
+                        raise
+                    raise _Gone() from exc
+            except _Gone as gone:
+                reason = describe_error(gone.__cause__)
+                logger.warning("%s: %s %s is gone (%s)", job.nzo_id,
+                               "copy" if is_copy else "grabbed file", ident, reason)
+                first = first or gone.__cause__
+                continue
+            except _CopyRejected as exc:
+                logger.warning("%s: copy %s not used: %s", job.nzo_id, ident, exc)
+                continue
+            if is_copy:
+                logger.warning("%s: grabbed file %s is gone (%s); downloaded identical copy %s "
+                               "instead", job.nzo_id, job.ident, describe_error(first), ident)
+            return dest
+        raise WebshareError(f"{describe_error(first)} ({len(copies)} identical copies tried)") from first
+
+    async def _check_copy(self, ident: str, fallback: dict) -> None:
+        """Re-check a copy right before using it: its length must still be the
+        one it was matched on, and its size (when file_info reports one) the
+        grab's. The download's announced size is checked again in _fetch."""
+        try:
+            info = await self._client.file_info(ident)
+        except (WebshareError, httpx.HTTPError) as exc:
+            raise _CopyRejected(f"file_info failed: {describe_error(exc)}") from exc
+        length = int(info.get("length") or 0)
+        if not length or abs(length - fallback["length"]) > COPY_LENGTH_TOLERANCE:
+            raise _CopyRejected(f"length {length} s, expected {fallback['length']} s")
+        size = int(info.get("size") or 0)
+        if size and size != fallback["size"]:
+            raise _CopyRejected(f"size {size} bytes, expected {fallback['size']}")
 
     @staticmethod
     async def _stream_to_file(job: Job, resp: httpx.Response, target: Path, offset: int) -> None:

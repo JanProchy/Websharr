@@ -124,6 +124,76 @@ def test_theme_setting_defaults_validates_persists_and_renders(client):
     assert client.get("/ui/api/settings").json()["theme"] == "space-grey"
 
 
+def test_runtime_check_setting_defaults_off_validates_and_persists(client, monkeypatch):
+    import json
+
+    from app.config import config
+    from app.settings import settings
+
+    _setup(client)
+    assert client.get("/ui/api/settings").json()["runtime_check"] is False
+    assert 'id="set-runtime-check"' in client.get("/ui").text
+
+    assert client.post("/ui/api/settings", json={"runtime_check": True}).status_code == 200
+    assert client.get("/ui/api/settings").json()["runtime_check"] is True
+    assert json.loads(config.settings_file.read_text())["runtime_check"] is True
+
+    rejected = client.post("/ui/api/settings", json={"runtime_check": "yes"})
+    assert rejected.status_code == 400
+    assert settings.runtime_check is True
+
+    # A saved "off" wins over an env default of "on" after a restart.
+    client.post("/ui/api/settings", json={"runtime_check": False})
+    monkeypatch.setattr(config, "runtime_check", True)
+    settings.load()
+    assert settings.runtime_check is False
+
+
+def test_runtime_check_env_default(monkeypatch, tmp_path):
+    from app.config import Config, config
+    from app.settings import Settings
+
+    monkeypatch.delenv("RUNTIME_CHECK", raising=False)
+    assert Config().runtime_check is False
+    monkeypatch.setenv("RUNTIME_CHECK", "true")
+    assert Config().runtime_check is True
+
+    # Nothing saved yet: the env value is the default.
+    monkeypatch.setattr(config, "settings_file", tmp_path / "settings.json")
+    monkeypatch.setattr(config, "runtime_check", True)
+    fresh = Settings()
+    fresh.load()
+    assert fresh.runtime_check is True
+
+
+def test_duplicate_fallback_setting_defaults_off_validates_and_persists(client, monkeypatch):
+    import json
+
+    from app.config import Config, config
+    from app.settings import settings
+
+    _setup(client)
+    assert client.get("/ui/api/settings").json()["duplicate_fallback"] is False
+    assert 'id="set-duplicate-fallback"' in client.get("/ui").text
+
+    assert client.post("/ui/api/settings", json={"duplicate_fallback": True}).status_code == 200
+    assert client.get("/ui/api/settings").json()["duplicate_fallback"] is True
+    assert json.loads(config.settings_file.read_text())["duplicate_fallback"] is True
+    assert client.post("/ui/api/settings", json={"duplicate_fallback": 1}).status_code == 400
+    assert settings.duplicate_fallback is True
+
+    # A saved "off" wins over an env default of "on" after a restart.
+    client.post("/ui/api/settings", json={"duplicate_fallback": False})
+    monkeypatch.setattr(config, "duplicate_fallback", True)
+    settings.load()
+    assert settings.duplicate_fallback is False
+
+    monkeypatch.delenv("DUPLICATE_FALLBACK", raising=False)
+    assert Config().duplicate_fallback is False
+    monkeypatch.setenv("DUPLICATE_FALLBACK", "true")
+    assert Config().duplicate_fallback is True
+
+
 def test_webshare_password_never_stored_in_plaintext(client):
     from app.config import config
     import json

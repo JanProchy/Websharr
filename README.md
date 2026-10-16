@@ -128,6 +128,31 @@ looking the request up in **TMDB**:
 The token is optional — without it, aliases still work and everything else runs
 as normal; you just lose the automatic Czech-title resolution.
 
+### Runtime check (optional, off by default)
+
+With the token, ID-based searches (what Sonarr/Radarr send via Prowlarr) can also
+**check each file's duration** against the TMDB runtime of the movie or episode
+and drop files far off it — an hour-long documentary that happens to start with
+a short show's Czech name, a 20-minute special named like the feature, a
+5-minute excerpt. Turn it on in **Settings → Czech titles (TMDB)** or with
+`RUNTIME_CHECK=true` (the UI value wins); off, searches behave exactly as
+without it (no runtime lookups, no extra probes).
+
+- Only a mismatch counts: a file of the right length is never taken as proof
+  that it is the right title.
+- Movies pass from 0.6× to 2× the runtime; a named edition (*Extended*,
+  *Director's Cut*, *Uncut*, *Special Edition*, …) may run any amount longer.
+- Episodes pass from 0.5× to 2.6× the episode's own runtime; multi-episode
+  files (`S01E01E02`, `S01E01-E03`) may run longer. When TMDB has only the
+  show's typical episode length (season searches, episodes without a runtime),
+  only files far shorter than it (< 0.35×) are dropped. Specials (season 0) are
+  not checked.
+- Files of unknown length always pass.
+- Dropped files are replaced from up to two further Webshare result pages, so
+  *arr still gets up to the limit it asked for when more good files exist.
+- The check gets 30 s per search: whatever isn't measured by then goes out
+  unchecked rather than holding the search up (Sonarr gives an indexer 100 s).
+
 ## Monitoring and notifications
 
 - **Dashboard widget.** `GET /stats?apikey=…` returns compact JSON (active/queued
@@ -148,6 +173,8 @@ as normal; you just lose the automatic Czech-title resolution.
 | `WEBSHARE_USERNAME` / `WEBSHARE_PASSWORD` | — | Webshare.cz credentials (initial default; editable in the UI) |
 | `WEBSHARR_API_KEY` | auto-generated | API key for the Newznab/SABnzbd endpoints; set to pin a fixed value |
 | `TMDB_TOKEN` | — | TMDB API Read Access Token for [Czech-title](#czech-titles-tmdb) lookups (UI value wins) |
+| `RUNTIME_CHECK` | `false` | `true` drops files far off the TMDB runtime ([runtime check](#runtime-check-optional-off-by-default); UI value wins) |
+| `DUPLICATE_FALLBACK` | `false` | `true` downloads an identical copy when a grabbed file is gone ([duplicate fallback](#duplicate-fallback-optional-off-by-default); UI value wins) |
 | `NOTIFY_URLS` | — | Apprise URLs (comma-separated) for failure/VIP notifications (UI value wins) |
 | `NOTIFY_VIP_DAYS` | `7` | Warn when Webshare VIP has this many days left or fewer |
 | `SETTINGS_FILE` | `/config/settings.json` | persisted settings (UI account, Webshare login, API key) |
@@ -171,6 +198,33 @@ are noisy. For a TV query Websharr:
 
 Even so, because matching is filename-based, the occasional odd result slips
 through — use Interactive Search / the UI when it does.
+
+### Duplicate fallback (optional, off by default)
+
+Webshare often hosts the same file several times under different idents, and a
+grabbed file's link may be dead ("File temporarily unavailable") while a copy
+works. Turn this on in **Settings → Downloads** or with
+`DUPLICATE_FALLBACK=true` (the UI value wins); off, the feed, NZBs and
+downloads are exactly as without it.
+
+- Nothing is merged or hidden: every file stays its own release, with its own
+  guid and publish date. A release only names up to five *other files of the
+  same feed* as copies, so a copy has passed every filter its file passed.
+- A copy needs the same byte size (50 MB and up) and extension, the same
+  episode marker (`S01E05`/`1x05`, read from each name — a bare `05` is not
+  enough) or, for movies, the same title and year in the name, and the same
+  measured length. That is a heuristic: equal size and length don't prove equal
+  audio tracks. It is used only to replace the *whole* file, never to finish
+  one.
+- A copy is downloaded only when the grabbed file itself is gone — Webshare
+  says it is unavailable or deleted, or the download answers 404/410 — and only
+  while none of the grabbed file is on disk. Login, VIP, credit, rate-limit
+  (403/429), server and network errors fail the job as before.
+- Right before use the copy is re-checked (length via Webshare, and the exact
+  size the download announces, before a byte is written); each is tried once.
+  The job keeps the grabbed release's name and id; the substitution is logged.
+- Copies are kept next to the partial download in the incomplete folder, not in
+  the state file, so rolling Websharr back keeps every queued and finished job.
 
 ## Limitations
 

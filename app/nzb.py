@@ -2,7 +2,9 @@
 
 Sonarr/Radarr fetch the "NZB" from our Torznab endpoint themselves and push it
 to the SABnzbd API via mode=addfile. The NZB is just a carrier for the Webshare
-file ident, name and size, embedded as <meta> entries.
+file ident, name and size, embedded as <meta> entries. With the duplicate
+fallback on, also the idents of verified copies of the file and the length
+(seconds) they were matched on, for the download client to fall back to.
 """
 
 import re
@@ -13,22 +15,30 @@ NZB_NS = "http://www.newzbin.com/DTD/2003/nzb"
 
 
 class NzbPayload:
-    __slots__ = ("ident", "name", "size")
+    __slots__ = ("ident", "name", "size", "alternates", "length")
 
-    def __init__(self, ident: str, name: str, size: int):
+    def __init__(self, ident: str, name: str, size: int,
+                 alternates: list[str] | None = None, length: int = 0):
         self.ident = ident
         self.name = name
         self.size = size
+        self.alternates = list(alternates or [])
+        self.length = length
 
 
-def build_nzb(ident: str, name: str, size: int) -> str:
+def build_nzb(ident: str, name: str, size: int,
+              alternates: list[str] | None = None, length: int = 0) -> str:
+    # Without copies the NZB is exactly what it was before they existed.
+    alt = (f'\n    <meta type="websharr_alt">{escape(",".join(alternates))}</meta>'
+           f'\n    <meta type="websharr_length">{int(length)}</meta>'
+           if alternates and length > 0 else "")
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE nzb PUBLIC "-//newzBin//DTD NZB 1.1//EN" "http://www.newzbin.com/DTD/nzb/nzb-1.1.dtd">
 <nzb xmlns="{NZB_NS}">
   <head>
     <meta type="websharr_ident">{escape(ident)}</meta>
     <meta type="websharr_name">{escape(name)}</meta>
-    <meta type="websharr_size">{size}</meta>
+    <meta type="websharr_size">{size}</meta>{alt}
   </head>
   <file poster="websharr" date="0" subject={quoteattr(name)}>
     <groups><group>alt.binaries.websharr</group></groups>
@@ -57,7 +67,15 @@ def parse_nzb(content: bytes) -> NzbPayload | None:
         size = int(meta.get("websharr_size", "0"))
     except ValueError:
         size = 0
-    return NzbPayload(ident=ident, name=meta.get("websharr_name", ident), size=size)
+    # NZBs without websharr_alt (the feature off, or built before it) carry no
+    # copies; copies without a length are useless (see DownloadManager.add).
+    alternates = [a.strip() for a in meta.get("websharr_alt", "").split(",") if a.strip()]
+    try:
+        length = int(meta.get("websharr_length", "0"))
+    except ValueError:
+        length = 0
+    return NzbPayload(ident=ident, name=meta.get("websharr_name", ident), size=size,
+                      alternates=alternates, length=length)
 
 
 def sanitize_filename(name: str) -> str:
