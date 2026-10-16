@@ -567,9 +567,10 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
             title = f"{title} {marker}"
         ET.SubElement(item, "title").text = title
         ET.SubElement(item, "guid", {"isPermaLink": "false"}).text = f"websharr-{r.ident}"
-        # The saved file keeps the raw filename; the folder/title (nzbname) carries
-        # the parseable SxxEyy so *arr import works. Pass the title as nzbname so a
-        # direct GET of this link (or SAB addurl) names the job correctly.
+        # The release title (nzbname) carries the parseable SxxEyy so *arr import
+        # works: it names the job folder and, embedded in the NZB, the saved file.
+        # Pass it as nzbname so a direct GET of this link (or SAB addurl) names
+        # the job correctly.
         link = (
             f"{base}/torznab/nzb/{r.ident}"
             f"?apikey={config.api_key}"
@@ -711,7 +712,9 @@ async def torznab_nzb(ident: str, request: Request):
     except ValueError:
         size = 0
 
-    content = build_nzb(ident, name, size)
+    # The release title our feed advertised travels inside the NZB too: the
+    # upload filename *arr sends it under is not proof of where it came from.
+    content = build_nzb(ident, name, size, title=request.query_params.get("nzbname", ""))
     # Name the NZB after the parseable release title (nzbname) when present:
     # Sonarr re-uploads it to the SABnzbd client using this filename as the job
     # name, so the download folder carries SxxEyy for import.

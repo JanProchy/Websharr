@@ -17,6 +17,16 @@ def test_roundtrip_special_chars():
     assert payload.name == 'Divný <film> & "název".mkv'
 
 
+def test_roundtrip_release_title():
+    """Our feed embeds the release title it advertised; an NZB without one (a
+    manual or older NZB) parses with an empty title and is byte-identical."""
+    payload = parse_nzb(build_nzb("id1", "raw.mkv", 1, title="Show S01E01 <CZ> & co").encode())
+    assert payload.title == "Show S01E01 <CZ> & co"
+    assert parse_nzb(build_nzb("id1", "raw.mkv", 1).encode()).title == ""
+    assert build_nzb("id1", "raw.mkv", 1, title="") == build_nzb("id1", "raw.mkv", 1)
+    assert "websharr_title" not in build_nzb("id1", "raw.mkv", 1)
+
+
 def test_parse_garbage():
     assert parse_nzb(b"not xml at all") is None
     assert parse_nzb(b"<nzb></nzb>") is None

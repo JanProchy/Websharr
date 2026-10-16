@@ -708,6 +708,19 @@ def test_nzb_download(client):
     assert b"id1" in resp.content
 
 
+def test_nzb_download_embeds_the_release_title(client):
+    """The release title the feed advertised (nzbname) travels inside the NZB,
+    so the SABnzbd side can tell it from an arbitrary upload filename."""
+    from app.nzb import parse_nzb
+    resp = client.get("/torznab/nzb/id1", params={
+        "apikey": "testkey", "name": "Kaceri pribehy S01E18.mkv", "size": "1",
+        "nzbname": "DuckTales S01E18 - Kaceri pribehy CZ",
+    })
+    assert parse_nzb(resp.content).title == "DuckTales S01E18 - Kaceri pribehy CZ"
+    bare = client.get("/torznab/nzb/id1", params={"apikey": "testkey", "name": "x.mkv"})
+    assert parse_nzb(bare.content).title == ""
+
+
 def test_nzb_download_non_ascii_name(client):
     # CZ names ("Řád") must be transliterated to pure ASCII in the header —
     # Prowlarr chokes on a diacritic filename* (RFC 5987), so we don't send one.

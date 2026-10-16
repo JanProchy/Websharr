@@ -8,6 +8,7 @@ the incomplete dir via an HTTP Range request.
 import asyncio
 import json
 import logging
+import re
 import shutil
 import time
 import uuid
@@ -23,6 +24,54 @@ logger = logging.getLogger("websharr.downloads")
 
 CHUNK_SIZE = 1024 * 1024
 HISTORY_CAP = 500  # keep this many completed/failed records in the UI history
+NAME_MAX = 255  # bytes per path component (ext4, btrfs, xfs), UTF-8 encoded
+
+# A file extension: short, alphanumeric, at least one letter (".mkv", ".m2ts";
+# not ".2024" or "Film 1080p. Dabing").
+_EXT_RE = re.compile(r"\.(?=[0-9]*[A-Za-z])[A-Za-z0-9]{1,8}$")
+
+
+def _split_ext(name: str) -> tuple[str, str]:
+    m = _EXT_RE.search(name)
+    return (name[:m.start()], m.group(0)) if m else (name, "")
+
+
+def _fit(stem: str, tail: str = "") -> str:
+    """`stem` + `tail` within NAME_MAX bytes. A longer name is refused by the
+    filesystem (ENAMETOOLONG), so the stem is cut — never mid-character — and
+    the tail (extension, collision counter) is kept."""
+    if len((stem + tail).encode()) <= NAME_MAX:
+        return stem + tail
+    cut = stem.encode()[:max(NAME_MAX - len(tail.encode()), 0)].decode("utf-8", "ignore")
+    return (cut.rstrip(" .") or "unnamed") + tail
+
+
+def fit_name(name: str) -> str:
+    """A file name within NAME_MAX bytes, keeping its extension."""
+    return _fit(*_split_ext(name))
+
+
+def release_file_name(release: str, name: str) -> str:
+    """The finished file named after an explicit release title, with the raw
+    file's extension: Sonarr parses the file before the folder, and a raw Czech
+    name ("Kaceri pribehy S01E18 Kachnosaurus.mkv") doesn't map to the show
+    (DuckTales). A title already ending in that extension doesn't get it twice."""
+    ext = _split_ext(name)[1]
+    stem = release[:-len(ext)] if ext and release.lower().endswith(ext.lower()) else release
+    return fit_name(sanitize_filename(stem + ext))
+
+
+def free_path(directory: Path, name: str) -> Path:
+    """`directory / name`, or "name (2).ext", "name (3).ext"... if taken: two
+    jobs can share a folder (two uploads both named "download.nzb"), and a
+    finished file another job left there must never be replaced."""
+    path = directory / name
+    stem, ext = _split_ext(name)
+    n = 2
+    while path.exists() or path.is_symlink():
+        path = directory / _fit(stem, f" ({n}){ext}")
+        n += 1
+    return path
 
 
 def describe_error(exc: BaseException) -> str:
@@ -49,7 +98,10 @@ def _total_size(resp: httpx.Response, offset: int) -> int:
 class Job:
     nzo_id: str
     ident: str
-    name: str  # sanitized file name incl. extension
+    # Sanitized file name incl. extension, as the file is saved: the raw Webshare
+    # name, or the explicit release title (see DownloadManager.add). Fixed when
+    # the job is added, so the incomplete file and a resume after restart agree.
+    name: str
     category: str
     size: int
     # Release/display name (e.g. "Skvrna S01E01 - ...") used for the job folder
@@ -146,11 +198,20 @@ class DownloadManager:
 
     # -- public API --------------------------------------------------------
 
-    def add(self, ident: str, name: str, size: int, category: str, title: str = "") -> Job:
+    def add(self, ident: str, name: str, size: int, category: str, title: str = "",
+            release: str = "") -> Job:
+        """Queue a download. `title` names the job folder; `release`, an explicit
+        release title (nzbname, or embedded by our feed), also names the file.
+        Without it the file keeps its raw name, so a manual upload is unchanged.
+        Either way the name is capped to NAME_MAX bytes here, before anything
+        is downloaded."""
+        release = sanitize_filename(release) if release.strip(" .") else ""
+        file_name = release_file_name(release, sanitize_filename(name)) if release \
+            else fit_name(sanitize_filename(name))
         job = Job(
             nzo_id=f"SABnzbd_nzo_{uuid.uuid4().hex[:12]}",
             ident=ident,
-            name=sanitize_filename(name),
+            name=file_name,
             category=category or "*",
             size=size,
             title=sanitize_filename(title) if title else "",
@@ -368,9 +429,10 @@ class DownloadManager:
                     await self._stream_to_file(job, resp, target, offset)
                 break
 
-        final_dir = self._complete_dir / job.category / job.job_name
+        final_dir = self._complete_dir / job.category / _fit(job.job_name)
         final_dir.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(target), final_dir / job.name)
+        # No await from here on: no other job can claim the free name meanwhile.
+        shutil.move(str(target), free_path(final_dir, job.name))
         shutil.rmtree(work_dir, ignore_errors=True)
         job.storage = str(final_dir)
         job.size = max(job.size, job.downloaded)

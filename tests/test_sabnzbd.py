@@ -39,8 +39,9 @@ def test_addfile_download_lifecycle(client, fake_webshare, tmp_path, httpserver=
         fake_webshare.file_link_url = f"http://127.0.0.1:{httpd.server_address[1]}/file.mkv"
 
         nzb = build_nzb("id9", "zaklinac.raw.file.mkv", len(payload))
-        # Sonarr uploads the NZB named after the release title; that becomes the
-        # job folder (so it carries SxxEyy), while the file keeps its raw name.
+        # The NZB is uploaded named after the release title; that becomes the job
+        # folder (so it carries SxxEyy). An upload name is not a trusted release
+        # title (no websharr_title embedded by our feed), so the file keeps its raw name.
         resp = client.post(
             "/sabnzbd/api",
             params={"mode": "addfile", "apikey": "testkey", "cat": "tv"},

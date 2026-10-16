@@ -104,11 +104,15 @@ def _get_config_payload() -> dict:
     }
 
 
-async def _extract_nzb_payload(request: Request, params) -> tuple[str, str, int, str] | None:
-    """Return (ident, name, size, title) from an addfile upload or addurl link.
+async def _extract_nzb_payload(request: Request, params) -> tuple[str, str, int, str, str] | None:
+    """Return (ident, name, size, title, release) from an addfile upload or addurl link.
 
     `title` is the *arr release name (with SxxEyy) used for the job folder:
     addurl carries it as nzbname; addfile puts it in the uploaded file's name.
+    `release` is a release title the finished file is named after, set only
+    when it is explicit: nzbname on addurl, or the title our own feed embedded
+    in the NZB. An upload filename is not one ("download.nzb" is common), so a
+    manual upload keeps the media file name from the NZB.
     """
     mode = params.get("mode")
     if mode == "addurl":
@@ -124,7 +128,7 @@ async def _extract_nzb_payload(request: Request, params) -> tuple[str, str, int,
         except ValueError:
             size = 0
         title = (params.get("nzbname") or qs.get("nzbname", [""])[0] or "").strip()
-        return m.group(1), name, size, title
+        return m.group(1), name, size, title, title
 
     form = await request.form()
     for key in ("nzbfile", "name"):
@@ -135,7 +139,7 @@ async def _extract_nzb_payload(request: Request, params) -> tuple[str, str, int,
                 fname = getattr(upload, "filename", "") or ""
                 title = re.sub(r"\.nzb$", "", fname, flags=re.IGNORECASE).strip()
                 title = title or (params.get("nzbname") or "").strip()
-                return payload.ident, payload.name, payload.size, title
+                return payload.ident, payload.name, payload.size, title, payload.title.strip()
     return None
 
 
@@ -225,11 +229,13 @@ async def sabnzbd_api(request: Request):
         extracted = await _extract_nzb_payload(request, params)
         if extracted is None:
             return _err("Could not extract Webshare ident from NZB")
-        ident, name, size, title = extracted
+        ident, name, size, title, release = extracted
         category = params.get("cat", "*")
         # title (the *arr release name, with SxxEyy) becomes the job folder so
-        # the importer can parse the episode even from oddly-named files.
-        job = manager.add(ident=ident, name=name, size=size, category=category, title=title)
+        # the importer can parse the episode even from oddly-named files; an
+        # explicit release title names the file too (Sonarr parses it first).
+        job = manager.add(ident=ident, name=name, size=size, category=category, title=title,
+                          release=release)
         return JSONResponse({"status": True, "nzo_ids": [job.nzo_id]})
 
     logger.warning("Unhandled SABnzbd mode: %s", mode)

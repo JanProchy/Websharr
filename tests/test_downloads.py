@@ -121,6 +121,217 @@ def test_pause_resume(tmp_path, monkeypatch):
         httpd.shutdown()
 
 
+def _serve_idents(payloads: dict[str, bytes], fake_webshare):
+    """Serve a distinct payload per Webshare ident, so tests can tell apart
+    which job's bytes ended up in which file."""
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            data = payloads[self.path.lstrip("/")]
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *args):
+            pass
+
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+
+    async def file_link(ident: str) -> str:
+        return f"http://127.0.0.1:{httpd.server_address[1]}/{ident}"
+
+    fake_webshare.file_link = file_link
+    return httpd
+
+
+def _addfile(client, nzb: str, upload_name: str) -> str:
+    resp = client.post("/sabnzbd/api", params={"mode": "addfile", "apikey": "testkey", "cat": "tv"},
+                       files={"nzbfile": (upload_name, nzb.encode(), "application/x-nzb")})
+    return resp.json()["nzo_ids"][0]
+
+
+def _addurl(client, ident: str, name: str, nzbname: str = "") -> str:
+    url = f"http://websharr:9797/torznab/nzb/{ident}?apikey=testkey&name={name}&size=0"
+    params = {"mode": "addurl", "apikey": "testkey", "name": url, "cat": "tv"}
+    if nzbname:
+        params["nzbname"] = nzbname
+    return client.post("/sabnzbd/api", params=params).json()["nzo_ids"][0]
+
+
+def _finished(manager, *nzo_ids) -> list[Path]:
+    assert wait_for(lambda: all(manager.get(n).status == "completed" for n in nzo_ids))
+    return [Path(manager.get(n).storage) for n in nzo_ids]
+
+
+def test_finished_file_is_named_after_the_release(client, fake_webshare):
+    """A raw Czech name ("Kaceri pribehy S01E18 ...") doesn't map to the show in
+    Sonarr, which parses the file before the folder. An NZB from our feed carries
+    the release title it was advertised under; Sonarr uploads it and the file
+    takes that title, keeping its extension. A UI grab's nzbname does the same."""
+    release = "DuckTales S01E18 - Kaceri pribehy Kachnosaurus CZ"
+    httpd = _serve_idents({"k18": b"k18" * 1000, "k20": b"k20" * 1000}, fake_webshare)
+    try:
+        nzb = client.get("/torznab/nzb/k18", params={
+            "apikey": "testkey", "name": "Kaceri pribehy S01E18 Kachnosaurus.mkv",
+            "size": "3000", "nzbname": release}).text
+        sonarr = _addfile(client, nzb, f"{release}.nzb")
+        ui = _addurl(client, "k20", "Kaceri pribehy S01E20.avi", nzbname="DuckTales S01E20 - Kaceri CZ")
+        manager = app.state.downloads
+        s_dir, u_dir = _finished(manager, sonarr, ui)
+        assert [f.name for f in s_dir.iterdir()] == [f"{release}.mkv"]
+        assert (s_dir / f"{release}.mkv").read_bytes() == b"k18" * 1000
+        assert (u_dir / "DuckTales S01E20 - Kaceri CZ.avi").read_bytes() == b"k20" * 1000
+    finally:
+        httpd.shutdown()
+
+
+def test_without_release_title_the_raw_name_stays(client, fake_webshare):
+    """A direct addurl (no nzbname) and an NZB without an embedded title keep
+    the raw Webshare name, as before."""
+    httpd = _serve_idents({"r1": b"r1" * 500, "r2": b"r2" * 500}, fake_webshare)
+    try:
+        direct = _addurl(client, "r1", "Kaceri pribehy S01E19.avi")
+        bare = _addfile(client, build_nzb("r2", "Kaceri pribehy S01E21.mkv", 1000), ".nzb")
+        d_dir, b_dir = _finished(app.state.downloads, direct, bare)
+        assert (d_dir / "Kaceri pribehy S01E19.avi").read_bytes() == b"r1" * 500
+        assert (b_dir / "Kaceri pribehy S01E21.mkv").read_bytes() == b"r2" * 500
+    finally:
+        httpd.shutdown()
+
+
+def test_generic_upload_names_keep_the_media_names(client, fake_webshare):
+    """Two manual uploads both named "download.nzb" share the folder; each file
+    keeps its embedded name, so neither replaces the other."""
+    httpd = _serve_idents({"f1": b"first" * 400, "s2": b"second" * 400}, fake_webshare)
+    try:
+        first = _addfile(client, build_nzb("f1", "First.S01E01.mkv", 2000), "download.nzb")
+        second = _addfile(client, build_nzb("s2", "Second.S02E02.mkv", 2400), "download.nzb")
+        f_dir, s_dir = _finished(app.state.downloads, first, second)
+        assert f_dir == s_dir and f_dir.name == "download"
+        assert (f_dir / "First.S01E01.mkv").read_bytes() == b"first" * 400
+        assert (f_dir / "Second.S02E02.mkv").read_bytes() == b"second" * 400
+    finally:
+        httpd.shutdown()
+
+
+def test_upload_name_is_not_a_release_title(client, fake_webshare):
+    """An upload filename only names the folder: "download.nzb" with
+    Kaceri.S01E18.mkv inside stays Kaceri.S01E18.mkv, and an upload already
+    named after the file ("Kaceri.S01E18.mkv.nzb") doesn't double the suffix."""
+    httpd = _serve_idents({"g1": b"g1" * 500, "g2": b"g2" * 500}, fake_webshare)
+    try:
+        generic = _addfile(client, build_nzb("g1", "Kaceri.S01E18.mkv", 1000), "download.nzb")
+        suffixed = _addfile(client, build_nzb("g2", "Kaceri.S01E19.mkv", 1000), "Kaceri.S01E19.mkv.nzb")
+        g_dir, s_dir = _finished(app.state.downloads, generic, suffixed)
+        assert [f.name for f in g_dir.iterdir()] == ["Kaceri.S01E18.mkv"]
+        assert [f.name for f in s_dir.iterdir()] == ["Kaceri.S01E19.mkv"]
+    finally:
+        httpd.shutdown()
+
+
+def test_release_title_with_the_extension_is_not_doubled(client, fake_webshare):
+    httpd = _serve_idents({"d1": b"d1" * 500}, fake_webshare)
+    try:
+        nzo_id = _addurl(client, "d1", "kaceri.raw.mkv", nzbname="Kaceri.S01E18.MKV")
+        (folder,) = _finished(app.state.downloads, nzo_id)
+        assert [f.name for f in folder.iterdir()] == ["Kaceri.S01E18.mkv"]
+    finally:
+        httpd.shutdown()
+
+
+def test_same_release_twice_never_replaces_a_finished_file(client, fake_webshare):
+    """Two grabs of one release title land in one folder under one name: the
+    second gets a counter instead of replacing the first."""
+    httpd = _serve_idents({"a1": b"one" * 500, "a2": b"two" * 500}, fake_webshare)
+    try:
+        manager = app.state.downloads
+        one = _addurl(client, "a1", "x.mkv", nzbname="Show S01E01 CZ")
+        (folder,) = _finished(manager, one)
+        two = _addurl(client, "a2", "y.mkv", nzbname="Show S01E01 CZ")
+        _finished(manager, two)
+        assert (folder / "Show S01E01 CZ.mkv").read_bytes() == b"one" * 500
+        assert (folder / "Show S01E01 CZ (2).mkv").read_bytes() == b"two" * 500
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.parametrize("title", ["T" * 252, "Kačeří příběhy " * 20])
+def test_long_release_title_is_cut_to_the_filesystem_limit(client, fake_webshare, title):
+    """A title that fits as a folder can be too long once ".mkv" is added
+    (ENAMETOOLONG after the whole download). The name is cut to 255 UTF-8
+    bytes when the job is added, keeping the extension and whole characters."""
+    httpd = _serve_idents({"l1": b"l1" * 500, "l2": b"l2" * 500}, fake_webshare)
+    try:
+        manager = app.state.downloads
+        titled = _addurl(client, "l1", "raw.mkv", nzbname=title)
+        name = manager.get(titled).name  # fixed before anything is downloaded
+        assert len(name.encode()) <= downloads_module.NAME_MAX and name.endswith(".mkv")
+        assert title.startswith(name[:-len(".mkv")])
+        upload = _addfile(client, build_nzb("l2", "Short.S01E01.mkv", 1000), f"{title}.nzb")
+        t_dir, u_dir = _finished(manager, titled, upload)
+        assert (t_dir / name).read_bytes() == b"l1" * 500
+        assert (u_dir / "Short.S01E01.mkv").read_bytes() == b"l2" * 500
+        assert all(len(d.name.encode()) <= downloads_module.NAME_MAX for d in (t_dir, u_dir))
+    finally:
+        httpd.shutdown()
+
+
+def test_release_named_job_resumes_after_restart(tmp_path, monkeypatch):
+    """The release-titled file name lives in the persisted `name` (no new state
+    field an older version would choke on), so a resume finds the partial."""
+    partial = PAYLOAD[:120_000]
+    httpd, handler = _serve(PAYLOAD, support_range=True)
+    try:
+        url = f"http://127.0.0.1:{httpd.server_address[1]}/f.mkv"
+        with _start_app(tmp_path, monkeypatch, "http://127.0.0.1:1/x") as client:
+            job = app.state.downloads.get(_addurl(client, "res2", "raw.mkv", nzbname="Show S01E02 CZ"))
+            assert wait_for(lambda: job.status == "failed")  # unreachable link
+        assert job.name == "Show S01E02 CZ.mkv"
+        state = json.loads((tmp_path / "state.json").read_text())
+        assert set(state["jobs"][0]) == {
+            "nzo_id", "ident", "name", "category", "size", "title", "status", "downloaded",
+            "speed", "error", "storage", "added_ts", "completed_ts", "sab_hidden"}
+        state["jobs"][0].update(status="downloading", error="", completed_ts=0.0)
+        (tmp_path / "state.json").write_text(json.dumps(state))
+        (tmp_path / "incomplete" / job.nzo_id / job.name).write_bytes(partial)
+
+        with _start_app(tmp_path, monkeypatch, url):
+            manager = app.state.downloads
+            assert wait_for(lambda: manager.get(job.nzo_id).status == "completed")
+            done = manager.get(job.nzo_id)
+        assert (Path(done.storage) / "Show S01E02 CZ.mkv").read_bytes() == PAYLOAD
+        assert f"bytes={len(partial)}-" in handler.ranges
+    finally:
+        httpd.shutdown()
+
+
+def test_naming_helpers():
+    fit, rel, NAME_MAX = downloads_module.fit_name, downloads_module.release_file_name, \
+        downloads_module.NAME_MAX
+    assert fit("Short.mkv") == "Short.mkv"
+    assert fit("Film 1080p. Dabing") == "Film 1080p. Dabing"  # not an extension
+    cut = fit("ř" * 200 + ".mkv")  # 400 bytes of 2-byte characters
+    assert cut == "ř" * 125 + ".mkv" and len(cut.encode()) == 254
+    assert rel("Show S01E01", "raw.avi") == "Show S01E01.avi"
+    assert rel("Show.S01E01.avi", "raw.avi") == "Show.S01E01.avi"
+    assert rel("Show S01E01", "no extension") == "Show S01E01"
+    assert len(rel("T" * 300, "raw.m2ts").encode()) == NAME_MAX
+
+
+def test_free_path_never_reuses_a_taken_name(tmp_path):
+    free = downloads_module.free_path
+    assert free(tmp_path, "A.mkv") == tmp_path / "A.mkv"
+    (tmp_path / "A.mkv").write_bytes(b"1")
+    (tmp_path / "A (2).mkv").mkdir()
+    assert free(tmp_path, "A.mkv") == tmp_path / "A (3).mkv"
+    long = "B" * 251 + ".mkv"
+    (tmp_path / long).write_bytes(b"1")
+    other = free(tmp_path, long)
+    assert other.name.endswith(" (2).mkv") and len(other.name.encode()) == 255
+
+
 def _seed_interrupted_job(tmp_path, partial: bytes) -> str:
     """Write a state file + partial file as if a download was cut off mid-way."""
     nzo_id = "SABnzbd_nzo_resume01"
