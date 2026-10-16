@@ -1,4 +1,7 @@
+import urllib.parse
 import xml.etree.ElementTree as ET
+
+import pytest
 
 from app.torznab import (
     alias_titles,
@@ -33,6 +36,33 @@ def test_release_title_normalizes_for_tvsearch():
     assert release_title("Skvrna", "2", None, "whatever.mkv") == "Skvrna S02 - whatever"
     # Non-tv search leaves the name (stem) untouched.
     assert release_title("Vlny 2024", None, None, "Vlny.2024.1080p.mkv") == "Vlny.2024.1080p"
+
+
+def test_release_title_drops_the_episode_count_after_the_marker():
+    """An explicit total ("z 26", "of 26", "/26") is the season's episode count,
+    never an episode: it leaves the name instead of turning into "-E26". A real
+    range keeps its end. A bare hyphen after SxxEyy is ambiguous and left as
+    before."""
+    for total in ("S01E03 z 26", "S01E03 ze 26", "S01E03 of 26", "S01E03/26", "S01E03 / 26"):
+        title = release_title("Show", "1", "3", f"Show {total} 1080p CZ.mkv")
+        assert title == "Show S01E03 - Show 1080p CZ", total
+    for rng, ep, want in (("S01E01-E03", "1", "S01E01-E03"), ("S01E01E02", "1", "S01E01-E02"),
+                          ("S01E01-E02", "1", "S01E01-E02"), ("1x01-03", "1", "S01E01-E03")):
+        title = release_title("Show", "1", ep, f"Show.{rng}.1080p.mkv")
+        assert title == f"Show {want} - Show.1080p", rng
+    # "S01E23-26" may be part 23 of 26 (Czech uploads) or a range: unchanged
+    name = "Byl jednou jeden zivot S01E23-26 1987 CZ dab - Hormony (puvodni dabing CST).mp4"
+    assert release_title("Once Upon a Time... Life", "1", "23", name) == \
+        "Once Upon a Time... Life S01E23 - Byl jednou jeden zivot -26 1987 CZ dab - Hormony (puvodni dabing CST)"
+    # the range is only carried over when it starts at the released episode
+    assert release_title("Show", "2", "1", "Show S01E01-E03 1080p.mkv") == "Show S02E01 - Show 1080p"
+    # a "range" ending before its start, or a "total" below the episode, is
+    # neither: the marker goes, the rest stays as it always did
+    assert release_title("Show", "1", "5", "Show S01E05-03 1080p.mkv") == "Show S01E05 - Show -03 1080p"
+    assert release_title("Show", "1", "5", "Show S01E05 z 3 1080p.mkv") == "Show S01E05 - Show z 3 1080p"
+    # years and resolutions after the marker are left alone
+    assert release_title("Show", "1", "2", "Show S01E02 - 2019 720p.mkv") == "Show S01E02 - Show - 2019 720p"
+    assert release_title("Show", "1", "2", "Show S01E02-2019 720p.mkv") == "Show S01E02 - Show -2019 720p"
 
 
 def test_parse_query_extracts_episode_from_text():
@@ -299,6 +329,8 @@ def test_file_marker_reads_season():
     assert file_marker("Skvrna", "Skvrna 05 - Bestie.mp4") == (None, 5)
     assert file_marker("Futurama", "Futurama Fialovy Trpaslik special 06.mkv") == (0, 6)
     assert file_marker("Skvrna", "Skvrna - Bestie 1080p.mkv") == (None, None)
+    # a compact double episode counts as its first episode
+    assert file_marker("Zaklinac", "Zaklinac.S01E01E02.1080p.mkv") == (1, 1)
 
 
 def test_search_drops_other_season_with_same_episode(client, fake_webshare, monkeypatch):
@@ -386,6 +418,59 @@ def test_regular_episode_search_drops_explicit_special(client, fake_webshare, mo
     root = ET.fromstring(resp.content)
     titles = [it.findtext("title") for it in root.findall("channel/item")]
     assert titles == ["Futurama S04E03 - Futurama.1080p.CZ"]
+
+
+@pytest.mark.parametrize("name, ep, want", [
+    # explicit totals: the season's episode count, never a second episode
+    ("Show S01E25 of 26 1080p CZ.mkv", "25", "Show S01E25 - Show 1080p CZ"),
+    ("Show S01E25 z 26 1080p CZ.mkv", "25", "Show S01E25 - Show 1080p CZ"),
+    ("Show S01E25/26 1080p CZ.mkv", "25", "Show S01E25 - Show 1080p CZ"),
+    # real ranges keep their end
+    ("Show S01E01-E03 1080p CZ.mkv", "1", "Show S01E01-E03 - Show 1080p CZ"),
+    ("Show 1x01-03 1080p CZ.mkv", "1", "Show S01E01-E03 - Show 1080p CZ"),
+    ("Show.S01E01E02.1080p.CZ.mkv", "1", "Show S01E01-E02 - Show.1080p.CZ"),
+    # a bare hyphen after SxxEyy is ambiguous (part 23 of 26, or a range):
+    # released exactly as before, neither a range nor dropped
+    ("Show S01E23-26 1080p CZ.mkv", "23", "Show S01E23 - Show -26 1080p CZ"),
+    ("Show S01E25-26 1080p CZ.mkv", "25", "Show S01E25 - Show -26 1080p CZ"),
+    ("Show S01E07 1080p CZ.mkv", "7", "Show S01E07 - Show 1080p CZ"),
+])
+def test_episode_search_release_title_for_totals_and_ranges(client, fake_webshare, monkeypatch,
+                                                            name, ep, want):
+    """End to end: the release name a tvsearch emits for a file whose episode
+    marker is followed by a total or a range. A total must not become a second
+    episode, a range must not lose its end, and a compact "S01E01E02" must get
+    past the episode filter at all."""
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "")
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [SearchResult("r1", name, 1_000_000_000)]
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "q": "Show", "season": "1", "ep": ep})
+    root = ET.fromstring(resp.content)
+    titles = [i.findtext("title") for i in root.findall("channel/item")]
+    assert titles == [want]
+    link = root.find("channel/item/link").text
+    assert f"nzbname={urllib.parse.quote(want)}" in link  # the download folder too
+
+
+def test_season_search_release_title_keeps_range(client, fake_webshare, monkeypatch):
+    # A season search releases each file under its own episode; a range file
+    # keeps its range, a total does not become one.
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "")
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("a", "Show S01E01E02 1080p CZ.mkv", 2_000_000_000),
+        SearchResult("b", "Show S01E05 z 26 1080p CZ.mkv", 1_000_000_000),
+    ]
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "q": "Show", "season": "1"})
+    root = ET.fromstring(resp.content)
+    titles = [i.findtext("title") for i in root.findall("channel/item")]
+    assert titles == ["Show S01E01-E02 - Show 1080p CZ", "Show S01E05 - Show 1080p CZ"]
 
 
 def test_search_filters_garbage_and_wrong_episode(client, fake_webshare):

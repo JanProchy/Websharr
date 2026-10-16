@@ -200,6 +200,39 @@ def _asciify(text: str) -> str:
     return re.sub(r"\s{2,}", " ", text).strip()
 
 
+# An episode marker in a file name with what may follow it: a total ("S01E23 z 26",
+# "S01E23 of 26", "S01E23/26" — the season's episode count, never an episode),
+# an explicit E endpoint ("S01E01-E03", "S01E01E02") or a "1x01-03" range.
+# A bare hyphen after SxxEyy ("S01E23-26") is ambiguous — a range, or a Czech
+# upload's "part 23 of 26" — so it is not consumed: only the marker goes, as
+# before, rather than releasing one file as four episodes or dropping a range.
+_MARKER_RE = re.compile(
+    r"\b(?P<marker>s(?P<s1>\d{1,2})e(?P<e1>\d{1,3})|(?P<s2>\d{1,2})x(?P<e2>\d{1,3}))"
+    r"(?:(?:\s*/\s*|\s+(?:of|ze?)\s+)(?P<total>\d{1,3})"
+    r"|(?:[-–]?e(?P<end>\d{1,3}))+"
+    r"|(?(s2)[-–](?P<bare>\d{2,3})))?\b", re.I)
+
+
+def _marker_episodes(m: re.Match) -> tuple[int, int, int]:
+    """(season, first, last) episode of a _MARKER_RE match; last == first for a
+    single episode, also one followed by a total."""
+    first = int(m.group("e1") or m.group("e2"))
+    end = m.group("end") or m.group("bare")
+    last = int(end) if end and int(end) > first else first
+    return int(m.group("s1") or m.group("s2")), first, last
+
+
+def _drop_marker(m: re.Match) -> str:
+    """Replacement for a _MARKER_RE match: the marker goes with its total or
+    range; a suffix that is neither (an end before the start, a "total" below
+    the episode) stays in the name, as it did before."""
+    first = int(m.group("e1") or m.group("e2"))
+    total, end = m.group("total"), m.group("end") or m.group("bare")
+    if (total and int(total) < first) or (end and int(end) < first):
+        return m.group(0)[m.end("marker") - m.start():]
+    return ""
+
+
 def release_title(query: str, season: str | None, ep: str | None, name: str) -> str:
     """Sonarr/Radarr-parseable release name.
 
@@ -216,16 +249,26 @@ def release_title(query: str, season: str | None, ep: str | None, name: str) -> 
     except (TypeError, ValueError):
         return _asciify(stem)
     q = (query or "").strip()
+    marker = _MARKER_RE.search(stem)
     if ep is not None:
         try:
-            prefix = f"{q} S{s:02d}E{int(ep):02d}"
+            e = int(ep)
+            prefix = f"{q} S{s:02d}E{e:02d}"
+            # A multi-episode file keeps its range ("S01E01-E03"), so *arr maps
+            # it to every episode it holds — never extended past what it names.
+            if marker:
+                m_season, m_first, m_last = _marker_episodes(marker)
+                if (m_season, m_first) == (s, e) and m_last > e:
+                    prefix += f"-E{m_last:02d}"
         except (TypeError, ValueError):
             prefix = f"{q} S{s:02d}"
     else:
         prefix = f"{q} S{s:02d}"
     # Strip any SxxEyy/1x02 already in the filename so the release doesn't carry
-    # two episode markers (confuses *arr's parser: "unable to determine episode").
-    stem = re.sub(r"\b(s\d{1,2}e\d{1,3}|\d{1,2}x\d{1,3})\b", "", stem, flags=re.I)
+    # two episode markers (confuses *arr's parser: "unable to determine episode")
+    # — with what follows it: a range (carried by the prefix above), or a total
+    # ("S01E23 z 26"), whose left-over "26" read as one more episode.
+    stem = _MARKER_RE.sub(_drop_marker, stem)
     stem = re.sub(r"\.{2,}", ".", stem)          # double dots left by the removal
     stem = re.sub(r"\s{2,}", " ", stem).strip(" .-")
     return _asciify(f"{prefix} - {stem}".strip(" -"))
@@ -486,7 +529,9 @@ def file_marker(query, name: str) -> tuple[int | None, int | None]:
             if tk in ("special", "specials"):
                 is_special = True
                 continue
-            m = re.match(r"^s(\d{1,2})e(\d{1,3})$", tk) or re.match(r"^(\d{1,2})x(\d{1,3})$", tk)
+            # "s01e01e02" (a compact double) counts as its first episode
+            m = re.match(r"^s(\d{1,2})e(\d{1,3})(?:e\d{1,3})*$", tk) or \
+                re.match(r"^(\d{1,2})x(\d{1,3})$", tk)
             if m:
                 return int(m.group(1)), int(m.group(2))
             if tk.isdigit() and len(tk) <= 2:  # bare episode number (skip years/1080)
