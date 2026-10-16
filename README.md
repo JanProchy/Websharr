@@ -128,6 +128,84 @@ looking the request up in **TMDB**:
 The token is optional — without it, aliases still work and everything else runs
 as normal; you just lose the automatic Czech-title resolution.
 
+### Runtime check (optional, off by default)
+
+With the token, ID-based searches (what Sonarr/Radarr send via Prowlarr) can also
+**check each file's duration** against the TMDB runtime of the movie or episode
+and drop files far off it — an hour-long documentary that happens to start with
+a short show's Czech name, a 20-minute special named like the feature, a
+5-minute excerpt. Turn it on in **Settings → Czech titles (TMDB)** or with
+`RUNTIME_CHECK=true` (the UI value wins); off, searches behave exactly as
+without it (no runtime lookups, no extra probes).
+
+- Only a mismatch counts: a file of the right length is never taken as proof
+  that it is the right title.
+- Movies pass from 0.6× to 2× the runtime; a named edition (*Extended*,
+  *Director's Cut*, *Uncut*, *Special Edition*, …) may run any amount longer.
+- Episodes pass from 0.5× to 2.6× the episode's own runtime; multi-episode
+  files (`S01E01E02`, `S01E01-E03`) may run longer. When TMDB has only the
+  show's typical episode length (season searches, episodes without a runtime),
+  only files far shorter than it (< 0.35×) are dropped. Specials (season 0) are
+  not checked.
+- Files of unknown length always pass.
+- Dropped files are replaced from up to two further Webshare result pages, so
+  *arr still gets up to the limit it asked for when more good files exist.
+- The check gets 30 s per search: whatever isn't measured by then goes out
+  unchecked rather than holding the search up (Sonarr gives an indexer 100 s).
+
+## Measured metadata (optional, off by default)
+
+Webshare's `file_info` is a media probe. Without any option, Websharr probes only
+the files whose name lacks a resolution (to label the quality) or a CZ/SK marker
+(to spot an unmarked dub). Turn on **Settings → Measured metadata** or
+`MEASURED_METADATA=true` (the UI value wins) and it measures **every** shown file
+and adds what the probe reports, only where the name doesn't already say it:
+
+- the **video codec** (`H264`, `H265`, `AV1`, `VP9`; never a bare `AVC`/`HEVC`,
+  which next to `BluRay` reads as a BR-DISK) and the **audio codec** of the best
+  track — of the CZ/SK track for a dub — as reported (`AC3`, `EAC3`, `DTS`,
+  `TrueHD`, `AAC`, `FLAC`, `Opus`, `MP3`). A name that tags either in any form
+  (`x264`, `HEVC`, `DD5.1`, `DDP`, `AC3`, `DTS-HD`, `TrueHD`, `Atmos`, `AAC2.0`,
+  …) keeps its own tag and gains nothing of that kind.
+- one `language` attribute per **tagged audio-track language** (`Czech` and
+  `English` for a dual-audio file), the name's CZ/SK claim first. This is the
+  track metadata as tagged, not a verified dub.
+
+The probe reports a channel *count*, not a layout, and no codec profile, so no
+channel layout (`5.1`, `7.1`) and no `DTS-HD MA` / `Atmos` is ever added; HDR/DV,
+bit depth and the source (WEB/BluRay) are not probed and never invented.
+
+Measuring shares the runtime check's budget of 30 s per search; files not
+measured by then go out unchanged, as do files whose probe fails. Probes are
+cached, limited process-wide, and parallel searches share one request per file.
+
+### Quality heuristics (optional, off by default)
+
+Inferences from the measurement rather than measurements, so they have their own
+switch — **Settings → Measured metadata → Correct overstated resolutions and mark
+upscales**, or `QUALITY_HEURISTICS=true` (the UI value wins). Like the measured
+metadata they measure every shown file within the same budget:
+
+- a resolution the name **overstates** (`4K`/`UHD`/`2160p` with 1080p inside, a
+  `1080p` with 720p inside) is replaced by the measured class; 4:3 (1440×1080) and
+  cropped widescreen (1920×800) keep theirs, and an understated name is left
+  alone.
+- **`Upscaled`** (scored by TRaSH's *Upscaled* custom format) when the name says
+  it is an AI upscale (`AI.Upscale`, `AIUS`, `1080p.AI.WEB`, …; titles like *Ai
+  Weiwei* or *A.I.* don't count, nor does `Regrade`, which is colour grading), or
+  when a measured 2160p H.264/H.265 file runs below 30 MiB per minute. Bitrate
+  alone can't prove an upscale, which is why this is opt-in; AV1/VP9 files are
+  never judged by bitrate.
+
+### Stub filter (optional, off by default)
+
+**Settings → Measured metadata → Drop stubs under 3 MiB per minute**, or
+`REJECT_STUBS=true` (the UI value wins), drops files measured below 3 MiB per
+minute — a few MB for a whole film is a stub or a broken upload, not an encode.
+It measures every shown file within the same budget; files of unknown length,
+not measured in time or whose probe fails are kept, and dropped files are
+replaced from up to two further Webshare result pages, as with the runtime check.
+
 ## Monitoring and notifications
 
 - **Dashboard widget.** `GET /stats?apikey=…` returns compact JSON (active/queued
@@ -148,6 +226,10 @@ as normal; you just lose the automatic Czech-title resolution.
 | `WEBSHARE_USERNAME` / `WEBSHARE_PASSWORD` | — | Webshare.cz credentials (initial default; editable in the UI) |
 | `WEBSHARR_API_KEY` | auto-generated | API key for the Newznab/SABnzbd endpoints; set to pin a fixed value |
 | `TMDB_TOKEN` | — | TMDB API Read Access Token for [Czech-title](#czech-titles-tmdb) lookups (UI value wins) |
+| `RUNTIME_CHECK` | `false` | `true` drops files far off the TMDB runtime ([runtime check](#runtime-check-optional-off-by-default); UI value wins) |
+| `MEASURED_METADATA` | `false` | `true` probes every shown file and adds the reported codecs and track languages ([measured metadata](#measured-metadata-optional-off-by-default); UI value wins) |
+| `QUALITY_HEURISTICS` | `false` | `true` corrects overstated resolutions and marks upscales ([quality heuristics](#quality-heuristics-optional-off-by-default); UI value wins) |
+| `REJECT_STUBS` | `false` | `true` drops files measured under 3 MiB per minute ([stub filter](#stub-filter-optional-off-by-default); UI value wins) |
 | `NOTIFY_URLS` | — | Apprise URLs (comma-separated) for failure/VIP notifications (UI value wins) |
 | `NOTIFY_VIP_DAYS` | `7` | Warn when Webshare VIP has this many days left or fewer |
 | `SETTINGS_FILE` | `/config/settings.json` | persisted settings (UI account, Webshare login, API key) |

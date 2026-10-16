@@ -59,6 +59,22 @@ class Settings:
         # searched under its Czech title looked up from TMDB. Env var is the
         # initial default; a value saved in the UI overrides it.
         self.tmdb_token: str = config.tmdb_token
+        # Runtime check: with the TMDB token, ID-based searches drop files whose
+        # duration is far off the TMDB runtime. Off unless enabled (env var
+        # RUNTIME_CHECK is the initial default, the UI toggle overrides it).
+        self.runtime_check: bool = config.runtime_check
+        # Measured metadata: probe every shown file and add the reported codecs
+        # and audio-track languages to the feed. Off unless enabled (env var
+        # MEASURED_METADATA is the initial default, the UI toggle overrides it).
+        self.measured_metadata: bool = config.measured_metadata
+        # Quality heuristics: correct an overstated resolution claim and mark
+        # upscales. Inferences, not measurements, so off unless enabled (env var
+        # QUALITY_HEURISTICS, the UI toggle overrides it).
+        self.quality_heuristics: bool = config.quality_heuristics
+        # Stub rejection: drop files measured under 3 MiB per minute. A hard
+        # filter, so off unless enabled (env var REJECT_STUBS, the UI toggle
+        # overrides it).
+        self.reject_stubs: bool = config.reject_stubs
         # Concurrent-download limit; env var is the initial default, editable in
         # the UI (Settings and the Queue page).
         self.max_concurrent: int = config.max_concurrent
@@ -93,6 +109,15 @@ class Settings:
         aliases = data.get("aliases", [])
         self.aliases = [a for a in aliases if a.get("from") and a.get("to")]
         self.tmdb_token = data.get("tmdb_token") or config.tmdb_token
+        # A saved False must win over the env default, so no `or` fallback here.
+        check = data.get("runtime_check")
+        self.runtime_check = check if isinstance(check, bool) else config.runtime_check
+        metadata = data.get("measured_metadata")
+        self.measured_metadata = metadata if isinstance(metadata, bool) else config.measured_metadata
+        heuristics = data.get("quality_heuristics")
+        self.quality_heuristics = heuristics if isinstance(heuristics, bool) else config.quality_heuristics
+        stubs = data.get("reject_stubs")
+        self.reject_stubs = stubs if isinstance(stubs, bool) else config.reject_stubs
         try:
             self.max_concurrent = max(1, int(data.get("max_concurrent") or config.max_concurrent))
         except (TypeError, ValueError):
@@ -120,6 +145,10 @@ class Settings:
             "secret": self.secret,
             "aliases": self.aliases,
             "tmdb_token": self.tmdb_token,
+            "runtime_check": self.runtime_check,
+            "measured_metadata": self.measured_metadata,
+            "quality_heuristics": self.quality_heuristics,
+            "reject_stubs": self.reject_stubs,
             "max_concurrent": self.max_concurrent,
             "notify_urls": self.notify_urls,
             "notify_vip_days": self.notify_vip_days,

@@ -102,6 +102,11 @@ def _parse_response(text: str) -> ET.Element:
     return root
 
 
+def _digits(text: str | None) -> int:
+    text = (text or "").strip()
+    return int(text) if text.isdigit() else 0
+
+
 def _text(root: ET.Element, tag: str, default: str = "") -> str:
     el = root.find(tag)
     return el.text if el is not None and el.text is not None else default
@@ -235,8 +240,8 @@ class WebshareClient:
         return link
 
     async def file_info(self, ident: str) -> dict:
-        """Per-file metadata: duration (s), resolution, codec, audio-track
-        languages. One API call."""
+        """Per-file metadata: duration (s), resolution, codec, audio tracks.
+        One API call."""
         root = await self._authed_post("/file_info/", {"ident": ident})
 
         def _int(tag: str) -> int:
@@ -251,6 +256,18 @@ class WebshareClient:
             "height": _int("height"),
             "format": _text(root, "format", ""),  # video codec, e.g. H264
             "type": _text(root, "type", ""),       # container, e.g. mkv
+            # Every audio track as reported: codec (AC3/EAC3/DTS/TRUEHD/AAC…),
+            # channel count and ISO 639-2 language ("" when untagged). Only a
+            # count, no layout, and no codec profile: DTS-HD MA and Atmos are not
+            # told apart from DTS / TrueHD.
+            "audio": [
+                {
+                    "format": (st.findtext("format") or "").strip().upper(),
+                    "channels": _digits(st.findtext("channels")),
+                    "language": (st.findtext("language") or "").strip().upper(),
+                }
+                for audio in root.iter("audio") for st in audio.iter("stream")
+            ],
             # ISO 639-2 codes of the tagged audio tracks, e.g. ["CZE", "ENG"].
             "audio_languages": [
                 el.text.strip().upper()

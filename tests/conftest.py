@@ -27,6 +27,7 @@ class FakeWebshareClient:
         self.results: list[SearchResult] = []
         self.file_infos: dict[str, dict] = {}
         self.fuzzy = False  # True = return everything, like Webshare fulltext
+        self.searches: list[tuple[str, int, int]] = []  # (query, limit, offset) per call
         self.file_link_url = "http://127.0.0.1:1/file.mkv"  # unreachable by default
 
     def set_credentials(self, username: str, password: str = "", password_digest: str = ""):
@@ -47,11 +48,12 @@ class FakeWebshareClient:
         return fake_digest(username, password)
 
     async def search(self, query: str, limit: int = 60, offset: int = 0):
-        if self.fuzzy:
-            return list(self.results)
-        return [r for r in self.results if all(
+        # Pages like Webshare: at most `limit` results, starting at `offset`.
+        self.searches.append((query, limit, offset))
+        hits = list(self.results) if self.fuzzy else [r for r in self.results if all(
             part.lower() in r.name.lower() for part in query.split()
         )]
+        return hits[offset:offset + limit]
 
     async def file_link(self, ident: str) -> str:
         return self.file_link_url
@@ -94,9 +96,22 @@ def wait_for(predicate, timeout: float = 5.0) -> bool:
 
 @pytest.fixture(autouse=True)
 def _fresh_probe_state(monkeypatch):
-    """The file_info cache and limiter are process-wide; start every test clean
-    and without real back-off sleeps."""
+    """The file_info cache, in-flight probes and limiter are process-wide; start
+    every test clean and without real back-off sleeps."""
     import app.torznab as torznab
     torznab._probe_cache.clear()
+    monkeypatch.setattr(torznab, "_probe_inflight", {})
     monkeypatch.setattr(torznab, "_probe_sem", None)
     monkeypatch.setattr(torznab, "_PROBE_RETRIES", (0, 0, 0))
+
+
+@pytest.fixture(autouse=True)
+def _no_tmdb_runtime(monkeypatch):
+    """Tests never reach TMDB for runtimes: a test that turns the runtime check
+    on patches `tmdb_runtime` itself."""
+    import app.torznab as torznab
+
+    async def unknown(*args, **kwargs):
+        return 0, False
+
+    monkeypatch.setattr(torznab, "tmdb_runtime", unknown)

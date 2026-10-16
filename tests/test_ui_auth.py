@@ -124,6 +124,173 @@ def test_theme_setting_defaults_validates_persists_and_renders(client):
     assert client.get("/ui/api/settings").json()["theme"] == "space-grey"
 
 
+def test_runtime_check_setting_defaults_off_validates_and_persists(client, monkeypatch):
+    import json
+
+    from app.config import config
+    from app.settings import settings
+
+    _setup(client)
+    assert client.get("/ui/api/settings").json()["runtime_check"] is False
+    assert 'id="set-runtime-check"' in client.get("/ui").text
+
+    assert client.post("/ui/api/settings", json={"runtime_check": True}).status_code == 200
+    assert client.get("/ui/api/settings").json()["runtime_check"] is True
+    assert json.loads(config.settings_file.read_text())["runtime_check"] is True
+
+    rejected = client.post("/ui/api/settings", json={"runtime_check": "yes"})
+    assert rejected.status_code == 400
+    assert settings.runtime_check is True
+
+    # A saved "off" wins over an env default of "on" after a restart.
+    client.post("/ui/api/settings", json={"runtime_check": False})
+    monkeypatch.setattr(config, "runtime_check", True)
+    settings.load()
+    assert settings.runtime_check is False
+
+
+def test_runtime_check_env_default(monkeypatch, tmp_path):
+    from app.config import Config, config
+    from app.settings import Settings
+
+    monkeypatch.delenv("RUNTIME_CHECK", raising=False)
+    assert Config().runtime_check is False
+    monkeypatch.setenv("RUNTIME_CHECK", "true")
+    assert Config().runtime_check is True
+
+    # Nothing saved yet: the env value is the default.
+    monkeypatch.setattr(config, "settings_file", tmp_path / "settings.json")
+    monkeypatch.setattr(config, "runtime_check", True)
+    fresh = Settings()
+    fresh.load()
+    assert fresh.runtime_check is True
+
+
+def test_measured_metadata_setting_defaults_off_validates_and_persists(client, monkeypatch):
+    import json
+
+    from app.config import config
+    from app.settings import settings
+
+    _setup(client)
+    assert client.get("/ui/api/settings").json()["measured_metadata"] is False
+    assert 'id="set-measured-metadata"' in client.get("/ui").text
+
+    assert client.post("/ui/api/settings", json={"measured_metadata": True}).status_code == 200
+    assert client.get("/ui/api/settings").json()["measured_metadata"] is True
+    assert json.loads(config.settings_file.read_text())["measured_metadata"] is True
+
+    rejected = client.post("/ui/api/settings", json={"measured_metadata": "yes"})
+    assert rejected.status_code == 400
+    assert settings.measured_metadata is True
+
+    # A saved "off" wins over an env default of "on" after a restart.
+    client.post("/ui/api/settings", json={"measured_metadata": False})
+    monkeypatch.setattr(config, "measured_metadata", True)
+    settings.load()
+    assert settings.measured_metadata is False
+
+
+def test_measured_metadata_env_default(monkeypatch, tmp_path):
+    from app.config import Config, config
+    from app.settings import Settings
+
+    monkeypatch.delenv("MEASURED_METADATA", raising=False)
+    assert Config().measured_metadata is False
+    monkeypatch.setenv("MEASURED_METADATA", "true")
+    assert Config().measured_metadata is True
+
+    monkeypatch.setattr(config, "settings_file", tmp_path / "settings.json")
+    monkeypatch.setattr(config, "measured_metadata", True)
+    fresh = Settings()
+    fresh.load()
+    assert fresh.measured_metadata is True
+
+
+def test_quality_heuristics_setting_defaults_off_validates_and_persists(client, monkeypatch):
+    import json
+
+    from app.config import config
+    from app.settings import settings
+
+    _setup(client)
+    assert client.get("/ui/api/settings").json()["quality_heuristics"] is False
+    assert 'id="set-quality-heuristics"' in client.get("/ui").text
+
+    assert client.post("/ui/api/settings", json={"quality_heuristics": True}).status_code == 200
+    assert client.get("/ui/api/settings").json()["quality_heuristics"] is True
+    assert json.loads(config.settings_file.read_text())["quality_heuristics"] is True
+    # independent of the measured metadata
+    assert client.get("/ui/api/settings").json()["measured_metadata"] is False
+
+    rejected = client.post("/ui/api/settings", json={"quality_heuristics": 1})
+    assert rejected.status_code == 400
+    assert settings.quality_heuristics is True
+
+    client.post("/ui/api/settings", json={"quality_heuristics": False})
+    monkeypatch.setattr(config, "quality_heuristics", True)
+    settings.load()
+    assert settings.quality_heuristics is False
+
+
+def test_quality_heuristics_env_default(monkeypatch, tmp_path):
+    from app.config import Config, config
+    from app.settings import Settings
+
+    monkeypatch.delenv("QUALITY_HEURISTICS", raising=False)
+    assert Config().quality_heuristics is False
+    monkeypatch.setenv("QUALITY_HEURISTICS", "true")
+    assert Config().quality_heuristics is True
+
+    monkeypatch.setattr(config, "settings_file", tmp_path / "settings.json")
+    monkeypatch.setattr(config, "quality_heuristics", True)
+    fresh = Settings()
+    fresh.load()
+    assert fresh.quality_heuristics is True
+
+
+def test_reject_stubs_setting_defaults_off_validates_and_persists(client, monkeypatch):
+    import json
+
+    from app.config import config
+    from app.settings import settings
+
+    _setup(client)
+    assert client.get("/ui/api/settings").json()["reject_stubs"] is False
+    assert 'id="set-reject-stubs"' in client.get("/ui").text
+
+    assert client.post("/ui/api/settings", json={"reject_stubs": True}).status_code == 200
+    got = client.get("/ui/api/settings").json()
+    assert got["reject_stubs"] is True
+    assert got["measured_metadata"] is False and got["quality_heuristics"] is False  # independent
+    assert json.loads(config.settings_file.read_text())["reject_stubs"] is True
+
+    rejected = client.post("/ui/api/settings", json={"reject_stubs": "on"})
+    assert rejected.status_code == 400
+    assert settings.reject_stubs is True
+
+    client.post("/ui/api/settings", json={"reject_stubs": False})
+    monkeypatch.setattr(config, "reject_stubs", True)
+    settings.load()
+    assert settings.reject_stubs is False
+
+
+def test_reject_stubs_env_default(monkeypatch, tmp_path):
+    from app.config import Config, config
+    from app.settings import Settings
+
+    monkeypatch.delenv("REJECT_STUBS", raising=False)
+    assert Config().reject_stubs is False
+    monkeypatch.setenv("REJECT_STUBS", "true")
+    assert Config().reject_stubs is True
+
+    monkeypatch.setattr(config, "settings_file", tmp_path / "settings.json")
+    monkeypatch.setattr(config, "reject_stubs", True)
+    fresh = Settings()
+    fresh.load()
+    assert fresh.reject_stubs is True
+
+
 def test_webshare_password_never_stored_in_plaintext(client):
     from app.config import config
     import json

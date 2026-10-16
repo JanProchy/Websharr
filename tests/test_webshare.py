@@ -25,3 +25,9 @@ def test_file_info_reads_audio_languages(monkeypatch):
     assert info["height"] == 1080
     # Untagged tracks are skipped; codes are upper-cased.
     assert info["audio_languages"] == ["CZE", "ENG"]
+    # Every track as reported, untagged ones included; a channel count only.
+    assert info["audio"] == [
+        {"format": "AC3", "channels": 2, "language": "CZE"},
+        {"format": "AC3", "channels": 6, "language": "ENG"},
+        {"format": "MP3", "channels": 2, "language": ""},
+    ]
