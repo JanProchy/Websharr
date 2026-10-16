@@ -8,6 +8,7 @@ the incomplete dir via an HTTP Range request.
 import asyncio
 import json
 import logging
+import re
 import shutil
 import time
 import uuid
@@ -23,6 +24,11 @@ logger = logging.getLogger("websharr.downloads")
 
 CHUNK_SIZE = 1024 * 1024
 HISTORY_CAP = 500  # keep this many completed/failed records in the UI history
+# A connection dropped mid-file is resumed from the partial file this many
+# times (waiting RESUME_DELAYS seconds) before the job fails.
+RESUME_ATTEMPTS = 5
+RESUME_DELAYS = (5, 15, 30, 60, 120)
+RESUME_FILE = ".resume.json"  # validators of a partial file, next to it
 
 
 def describe_error(exc: BaseException) -> str:
@@ -32,17 +38,105 @@ def describe_error(exc: BaseException) -> str:
     return str(exc).strip() or type(exc).__name__
 
 
-def _total_size(resp: httpx.Response, offset: int) -> int:
-    """Full file size implied by the response (0 if unknown)."""
-    if resp.status_code == 206:
-        content_range = resp.headers.get("content-range", "")  # bytes 100-999/1000
-        if "/" in content_range:
-            try:
-                return int(content_range.rsplit("/", 1)[1])
-            except ValueError:
-                pass
-        return offset + int(resp.headers.get("content-length", "0") or 0)
-    return int(resp.headers.get("content-length", "0") or 0)
+class DownloadIntegrityError(Exception):
+    """The server's answer can't be the file the job announced (wrong size)."""
+
+
+_CONTENT_RANGE = re.compile(r"bytes (\d+)-(\d+)/(\d+)")
+
+
+def _content_range(resp: httpx.Response) -> tuple[int, int, int] | None:
+    """(start, end, total) of a Content-Range header; None if missing/invalid."""
+    m = _CONTENT_RANGE.fullmatch(resp.headers.get("content-range", "").strip())
+    if not m:
+        return None
+    start, end, total = (int(g) for g in m.groups())
+    return (start, end, total) if start <= end < total else None
+
+
+def _content_length(resp: httpx.Response) -> int | None:
+    try:
+        return int(resp.headers["content-length"])
+    except (KeyError, ValueError):
+        return None
+
+
+@dataclass
+class _Validators:
+    """ETag / Last-Modified of the response a partial download was started
+    with. A resume sends one as If-Range, so the server only answers 206 while
+    it is still that file.
+
+    Kept in a sidecar file next to the partial data, not in the job state: an
+    older version skips state records with unknown fields, so a rollback would
+    lose every job. The file goes away with the partial file (restart, delete,
+    completion); a missing or unreadable one means "start over"."""
+
+    path: Path
+    etag: str = ""
+    last_modified: str = ""
+
+    @classmethod
+    def load(cls, path: Path) -> "_Validators":
+        try:
+            data = json.loads(path.read_text())
+            etag, last_modified = data.get("etag", ""), data.get("last_modified", "")
+        except (OSError, ValueError, AttributeError):
+            return cls(path)
+        if not isinstance(etag, str) or not isinstance(last_modified, str):
+            return cls(path)
+        return cls(path, etag, last_modified)
+
+    def save(self, resp: httpx.Response) -> None:
+        self.etag = resp.headers.get("etag", "")
+        self.last_modified = resp.headers.get("last-modified", "")
+        try:
+            self.path.write_text(json.dumps({"etag": self.etag, "last_modified": self.last_modified}))
+        except OSError as exc:  # only costs the resume after a restart
+            logger.warning("Could not write %s: %s", self.path, exc)
+
+    def clear(self) -> None:
+        self.etag = self.last_modified = ""
+        self.path.unlink(missing_ok=True)
+
+    @property
+    def if_range(self) -> str:
+        """Validator sent as If-Range on a resume; "" when nothing ties the
+        partial file to the remote one (then it can't be resumed safely). A
+        weak ETag may match a file with different bytes, so it doesn't count."""
+        if self.etag and not self.etag.startswith("W/"):
+            return self.etag
+        return self.last_modified
+
+
+def _resume_problem(seen: _Validators, resp: httpx.Response, offset: int, expected: int) -> str:
+    """Why a 206 answer to `Range: bytes=<offset>-` must not be appended to the
+    partial file ("" if it may). The range has to start exactly at the end of
+    the partial file and run to the end of a file of the expected size.
+
+    The request carried If-Range, so a 206 already means the server found the
+    validator unchanged (RFC 9110 13.1.5); a changed file gets a 200. Webshare's
+    nginx doesn't repeat Last-Modified on a 206, so a missing validator is fine,
+    but one the 206 does carry must still be the one the partial file has."""
+    rng = _content_range(resp)
+    if rng is None:
+        return f"invalid Content-Range {resp.headers.get('content-range', '')!r}"
+    start, end, total = rng
+    if start != offset:
+        return f"range starts at {start}, not {offset}"
+    if end != total - 1:
+        return f"range ends at {end}, before the end of the {total}-byte file"
+    if expected and total != expected:
+        return f"remote file is {total} bytes, expected {expected}"
+    length = _content_length(resp)
+    if length is not None and length != end - start + 1:
+        return f"Content-Length {length} doesn't match the range"
+    etag, last_modified = resp.headers.get("etag"), resp.headers.get("last-modified")
+    if seen.etag and etag is not None and etag != seen.etag:
+        return "ETag changed"
+    if seen.last_modified and last_modified is not None and last_modified != seen.last_modified:
+        return "Last-Modified changed"
+    return ""
 
 
 @dataclass
@@ -308,7 +402,7 @@ class DownloadManager:
         except asyncio.CancelledError:
             logger.info("Cancelled %s", job.nzo_id)
             raise
-        except (WebshareError, httpx.HTTPError, OSError) as exc:
+        except (WebshareError, httpx.HTTPError, DownloadIntegrityError, OSError) as exc:
             job.status = "failed"
             job.error = describe_error(exc)
             job.completed_ts = time.time()
@@ -345,43 +439,112 @@ class DownloadManager:
         work_dir = self._incomplete_path(job)
         work_dir.mkdir(parents=True, exist_ok=True)
         target = work_dir / job.name
+        # Sidecar next to the partial file; job names never start with a dot
+        # (sanitize_filename), and only `target` is moved to the complete dir.
+        seen = _Validators.load(work_dir / RESUME_FILE)
 
+        # Size announced by the NZB (exact Webshare bytes). A response never
+        # overrides it; only when the NZB had none does the first one set it.
+        expected = job.size
         offset = target.stat().st_size if target.exists() else 0
 
         async with httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(30.0, read=120.0)) as http:
+            interruptions = 0
             while True:
-                headers = {"Range": f"bytes={offset}-"} if offset else {}
-                async with http.stream("GET", url, headers=headers) as resp:
-                    if offset and resp.status_code == 416:
-                        # Partial file no longer matches the remote; start over.
-                        target.unlink(missing_ok=True)
-                        offset = 0
-                        continue
-                    if offset and resp.status_code != 206:
-                        offset = 0  # server ignored the Range header
-                    resp.raise_for_status()
-                    total = _total_size(resp, offset)
-                    if total:
-                        job.size = total
-                    if offset:
-                        logger.info("Resuming %s from %d bytes", job.nzo_id, offset)
-                    await self._stream_to_file(job, resp, target, offset)
+                if offset and (not seen.if_range or (expected and offset >= expected)):
+                    # Nothing proves the partial file is part of the remote one
+                    # (no validator from its first response), or it can't be a
+                    # prefix of it: appending could splice two different files.
+                    logger.info("Partial file of %s can't be resumed safely; starting over", job.nzo_id)
+                    offset = self._restart(job, target, seen)
+                headers = {"Range": f"bytes={offset}-", "If-Range": seen.if_range} if offset else {}
+                try:
+                    async with http.stream("GET", url, headers=headers) as resp:
+                        if offset and resp.status_code == 416:
+                            # Partial file no longer matches the remote; start over.
+                            offset = self._restart(job, target, seen)
+                            continue
+                        if offset and resp.status_code == 206:
+                            problem = _resume_problem(seen, resp, offset, expected)
+                            if problem:
+                                # Never append what may be another file or another
+                                # part of it; download the whole file again.
+                                logger.warning("Download %s can't resume at %d bytes (%s); starting over",
+                                               job.nzo_id, offset, problem)
+                                offset = self._restart(job, target, seen)
+                                continue
+                            if not expected:
+                                expected = job.size = _content_range(resp)[2]
+                        elif offset:
+                            # Server ignored the Range header, or If-Range saw a
+                            # changed file: this is the whole file from byte 0.
+                            offset = 0
+                        resp.raise_for_status()
+                        if not offset:
+                            if resp.status_code != 200:
+                                raise DownloadIntegrityError(
+                                    f"unexpected HTTP {resp.status_code} for the whole file")
+                            length = _content_length(resp)
+                            if expected and length is not None and length != expected:
+                                raise DownloadIntegrityError(
+                                    f"server sends {length} bytes, expected {expected}")
+                            if not expected and length:
+                                expected = job.size = length
+                            seen.save(resp)  # a later resume (pause, restart) checks them
+                        else:
+                            logger.info("Resuming %s from %d bytes", job.nzo_id, offset)
+                        await self._stream_to_file(job, resp, target, offset, expected)
+                    received = target.stat().st_size
+                    if expected and received < expected:
+                        raise httpx.RemoteProtocolError(
+                            f"stream ended at {received} of {expected} bytes")
+                except httpx.TransportError as exc:
+                    # A dropped connection mid-file ("peer closed connection without
+                    # sending complete message body") is common on multi-GB files.
+                    # Failing it made *arr blocklist a good release and throw the
+                    # partial file away; continue from what is on disk instead, with
+                    # a fresh link (the old one may have expired).
+                    interruptions += 1
+                    if interruptions > RESUME_ATTEMPTS:
+                        raise
+                    offset = target.stat().st_size if target.exists() else 0
+                    logger.warning("Download %s interrupted at %d bytes (%s); resuming, attempt %d/%d",
+                                   job.nzo_id, offset, exc, interruptions, RESUME_ATTEMPTS)
+                    await asyncio.sleep(RESUME_DELAYS[min(interruptions, len(RESUME_DELAYS)) - 1])
+                    url = await self._client.file_link(job.ident)
+                    continue
                 break
 
+        received = target.stat().st_size
+        if expected and received != expected:
+            raise DownloadIntegrityError(f"downloaded {received} bytes, expected {expected}")
         final_dir = self._complete_dir / job.category / job.job_name
         final_dir.mkdir(parents=True, exist_ok=True)
         shutil.move(str(target), final_dir / job.name)
         shutil.rmtree(work_dir, ignore_errors=True)
         job.storage = str(final_dir)
-        job.size = max(job.size, job.downloaded)
+        job.size = job.size or received
 
     @staticmethod
-    async def _stream_to_file(job: Job, resp: httpx.Response, target: Path, offset: int) -> None:
+    def _restart(job: Job, target: Path, seen: _Validators) -> int:
+        """Drop the partial file and its validators; the download starts at 0."""
+        target.unlink(missing_ok=True)
+        seen.clear()
+        job.downloaded = 0
+        return 0
+
+    @staticmethod
+    async def _stream_to_file(job: Job, resp: httpx.Response, target: Path, offset: int,
+                              expected: int) -> None:
         job.downloaded = offset
         last_t = time.monotonic()
         last_bytes = offset
         with target.open("ab" if offset else "wb") as fh:
             async for chunk in resp.aiter_bytes(CHUNK_SIZE):
+                if expected and job.downloaded + len(chunk) > expected:
+                    # Body without (or beyond) a Content-Length: never let the
+                    # file grow past the size the job announced.
+                    raise DownloadIntegrityError(f"server sent more than the expected {expected} bytes")
                 fh.write(chunk)
                 job.downloaded += len(chunk)
                 now = time.monotonic()

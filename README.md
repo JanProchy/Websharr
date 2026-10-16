@@ -180,8 +180,12 @@ through — use Interactive Search / the UI when it does.
   Prowlarr converts IDs to a text query before forwarding, so behind Prowlarr the
   ID is unavailable and the TMDB name match is used instead.
 - Interrupted downloads (restart, network outage, or **pause**) resume where they
-  left off via an HTTP Range request; a failed job can be restarted via SABnzbd
-  `mode=retry` (Retry in the UI History).
+  left off via an HTTP Range request with If-Range (the file's Last-Modified
+  or ETag from the first response), as long as the server confirms it is still
+  the same file and returns exactly the missing range; otherwise the file is
+  downloaded again from the start. A file that doesn't
+  end up exactly the size from the NZB fails instead of completing. A failed
+  job can be restarted via SABnzbd `mode=retry` (Retry in the UI History).
 
 ## Development
 

@@ -65,6 +65,13 @@ class FakeWebshareClient:
         pass
 
 
+@pytest.fixture(autouse=True)
+def _no_resume_waits(monkeypatch):
+    """Dropped connections are resumed after a pause; tests don't wait for it."""
+    import app.downloads as downloads
+    monkeypatch.setattr(downloads, "RESUME_DELAYS", (0,))
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "api_key", "testkey")
