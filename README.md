@@ -156,6 +156,16 @@ as normal; you just lose the automatic Czech-title resolution.
 | `STATE_FILE` | `/config/state.json` | queue/history persistence |
 | `MAX_CONCURRENT_DOWNLOADS` | `2` | concurrent downloads |
 | `SEARCH_LIMIT` | `60` | max results from Webshare per query |
+| `SEARCH_CACHE_TTL` | `0` (off) | seconds an identical Webshare search is answered from memory, e.g. `600` |
+
+Sonarr and Radarr repeat the same searches (per episode, per season, on retry).
+With `SEARCH_CACHE_TTL` set, Websharr answers an identical Webshare search from
+memory for that many seconds and sends identical searches that run at the same
+time only once — faster, and kinder to Webshare's rate limits. The trade-off is
+freshness: a file uploaded to Webshare in the meantime only shows up for that
+query once the cached answer expires. An empty answer is kept for at most 60
+seconds. The cache lives in memory only and is dropped whenever the Webshare
+account changes. By default (`0`) every search goes straight to Webshare.
 
 ## How search results are cleaned up
 
