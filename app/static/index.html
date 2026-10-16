@@ -449,6 +449,8 @@
   .sform input { width: 100%; margin-top: 5px; background: var(--inner); border: 1px solid var(--border);
     border-radius: 8px; padding: 8px 12px; color: var(--text); font-weight: 600; outline: none; }
   .sform input:focus { border-color: var(--accent); }
+  .sform label.scheck { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
+  .sform .scheck input { width: 18px; height: 18px; flex-shrink: 0; margin: 1px 0 0; padding: 0; }
   .sform input[readonly] { color: var(--muted); font-family: 'JetBrains Mono', monospace; font-size: 13px; }
   .sform textarea { width: 100%; margin-top: 5px; background: var(--inner); border: 1px solid var(--border);
     border-radius: 8px; padding: 8px 12px; color: var(--text); font-weight: 600; outline: none;
@@ -866,6 +868,11 @@
           but many Webshare files use the Czech name. With a <b>TMDB API Read Access
           Token</b>, Websharr looks up the Czech title automatically (by id when
           Sonarr/Radarr send it, otherwise by name) and searches it too.</p>
+        <p class="shint">Optionally, ID-based searches can also <b>check each file's
+          length</b> against the TMDB runtime and drop files far off it (a short
+          special or excerpt, an hour-long file for a 7-minute episode). Off by
+          default; named editions, multi-episode files and files of unknown length
+          are never dropped for it.</p>
       </div>
       <div class="sform">
         <label>TMDB Read Access Token
@@ -876,6 +883,9 @@
           <button class="primary" id="set-tmdb-save">Save token</button>
         </div>
         <span class="sresult" id="set-tmdb-result"></span>
+        <label class="scheck"><input id="set-runtime-check" type="checkbox">
+          Drop files far off the TMDB runtime</label>
+        <span class="sresult" id="set-runtime-result"></span>
       </div>
     </div>
 
@@ -1146,6 +1156,7 @@ const App = {
       $("set-tmdb-token").value = "";
       $("set-tmdb-token").placeholder = s.tmdb_token_set
         ? "•••••••• (set — leave empty to keep)" : "TMDB Read Access Token";
+      $("set-runtime-check").checked = !!s.runtime_check;
       this.renderAliases(s.aliases || []);
     } catch (e) { /* offline banner already covers this */ }
   },
@@ -1767,6 +1778,17 @@ $("set-tmdb-save").onclick = async () => {
     $("set-tmdb-token").value = "";
     App.loadSettings();
   } catch (e) { sresult("set-tmdb-result", false, e.message); }
+};
+
+$("set-runtime-check").onchange = async (e) => {
+  const on = e.target.checked;
+  try {
+    await uiPost("settings", { runtime_check: on });
+    sresult("set-runtime-result", true, on ? "✓ Runtime check on" : "✓ Runtime check off");
+  } catch (err) {
+    e.target.checked = !on;
+    sresult("set-runtime-result", false, err.message);
+  }
 };
 
 $("alias-add").onclick = () => {

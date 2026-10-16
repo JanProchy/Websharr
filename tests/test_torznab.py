@@ -722,3 +722,283 @@ def test_nzb_download_non_ascii_name(client):
     assert "filename*" not in cd                    # no RFC 5987 form
     assert "Rad" in cd and "Řád" not in cd          # transliterated
     cd.encode("ascii")                              # pure ASCII, header-safe
+
+
+def test_runtime_mismatch():
+    from app.torznab import runtime_mismatch
+    assert not runtime_mismatch(95 * 60, 100, "movie")      # normal cut
+    assert not runtime_mismatch(170 * 60, 100, "movie")     # long unmarked cut
+    assert runtime_mismatch(22 * 60, 81, "movie")           # short special, not the feature
+    assert runtime_mismatch(0 + 60 * 5, 44, "tv")           # 5-minute excerpt
+    assert not runtime_mismatch(88 * 60, 44, "tv")          # double episode
+    assert runtime_mismatch(60 * 60, 7, "tv")               # hour-long doc vs 7-min episode
+    assert not runtime_mismatch(0, 100, "movie")            # unknown length
+    assert not runtime_mismatch(3600, 0, "movie")           # unknown runtime
+
+
+def test_runtime_mismatch_editions_multi_episodes_and_fallbacks():
+    from app.torznab import runtime_mismatch
+    # a named edition may run any amount longer, but is never a 22-minute file
+    assert runtime_mismatch(260 * 60, 100, "movie")
+    for name in ("Film 2001 Extended 1080p.mkv", "Film.2001.Directors.Cut.mkv",
+                 "Film 2001 Director's Cut.mkv", "Film 2001 UNCUT.mkv",
+                 "Film 2001 Special Edition.mkv", "Film 2001 prodloužená verze.mkv"):
+        assert not runtime_mismatch(260 * 60, 100, "movie", name=name), name
+    assert runtime_mismatch(22 * 60, 100, "movie", name="Film 2001 Extended.mkv")
+    # multi-episode files run several episodes long
+    for name in ("Bluey S01E01E02E03.mkv", "Bluey S01E01-E03.mkv", "Bluey S01E01-03.mkv"):
+        assert not runtime_mismatch(25 * 60, 7, "tv", name=name), name
+    assert runtime_mismatch(25 * 60, 7, "tv", name="Bluey S01E01 720p.mkv")
+    # a show-level fallback never rejects a long episode, only a far shorter file
+    assert not runtime_mismatch(120 * 60, 40, "tv", exact=False)
+    assert not runtime_mismatch(20 * 60, 40, "tv", exact=False)
+    assert runtime_mismatch(5 * 60, 40, "tv", exact=False)
+
+
+def test_probe_state_is_fresh_in_every_test():
+    """Both autouse fixtures apply: the probe cache, limiter and back-off are
+    reset (a cached file_info leaked into the next test before), and TMDB
+    runtimes are never fetched."""
+    import asyncio
+    from app import torznab
+    assert torznab._probe_cache == {} and torznab._probe_sem is None
+    assert torznab._PROBE_RETRIES == (0, 0, 0)
+    assert asyncio.run(torznab.tmdb_runtime("tok", "movie", tmdbid="1")) == (0, False)
+
+
+def _enable_runtime_check(monkeypatch, result, minutes, exact=True, calls=None):
+    """Turn the runtime check on and fake TMDB: the id lookup answers `result`,
+    the runtime lookup (minutes, exact) — recording each call in `calls`."""
+    from app import torznab
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "tok")
+    monkeypatch.setattr(settings, "runtime_check", True)
+
+    async def by_id(token, kind, tmdbid=None, imdbid=None, tvdbid=None):
+        return result
+
+    async def by_name(token, kind, q):
+        return None
+
+    async def runtime(token, kind, tmdbid=None, imdbid=None, tvdbid=None, season=None, ep=None):
+        if calls is not None:
+            calls.append((kind, season, ep))
+        return minutes, exact
+
+    monkeypatch.setattr(torznab, "tmdb_lookup_by_id", by_id)
+    monkeypatch.setattr(torznab, "tmdb_lookup", by_name)
+    monkeypatch.setattr(torznab, "tmdb_runtime", runtime)
+
+
+_INFO = {"width": 1920, "height": 1080, "format": "H264", "type": "mkv"}
+_TOY_STORY = ("Toy Story", "", "en", (), 1995)
+
+
+def _feed(client, **params):
+    resp = client.get("/torznab/api", params={"apikey": "testkey", **params})
+    return [i.findtext("guid").removeprefix("websharr-")
+            for i in ET.fromstring(resp.content).findall("channel/item")]
+
+
+def test_runtime_check_is_off_by_default(client, fake_webshare, monkeypatch):
+    """Off (the default), an id search behaves as without the feature: no TMDB
+    runtime lookup, no extra probes or pages, nothing dropped by length."""
+    from app import torznab
+    from app.settings import settings
+    assert settings.runtime_check is False
+    calls = []
+    _enable_runtime_check(monkeypatch, _TOY_STORY, 81, calls=calls)
+    monkeypatch.setattr(settings, "runtime_check", False)
+    probed = []
+    real = fake_webshare.file_info
+
+    async def file_info(ident):
+        probed.append(ident)
+        return await real(ident)
+
+    fake_webshare.file_info = file_info
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("named", "Toy Story 1995 1080p CZ.mkv", 2_000_000_000),
+        SearchResult("bare", "Toy Story 1995.avi", 1_000_000_000),
+    ]
+    fake_webshare.file_infos = {"named": {**_INFO, "length": 60}, "bare": {**_INFO, "length": 60}}
+    assert _feed(client, t="movie", tmdbid="862", cat="2000", limit="1") == ["named"]
+    assert calls == []                                  # no runtime lookup
+    assert probed == []                                 # the named file needs no probe
+    assert fake_webshare.searches == [("Toy Story", 1, 0)]
+    assert torznab._probe_cache == {}
+
+
+def test_movie_search_drops_files_far_off_the_tmdb_runtime(client, fake_webshare, monkeypatch):
+    """An id search knows the movie's runtime; a file with the right name but a
+    fraction of the length is a special/excerpt ("Toy Story That Time Forgot"
+    for Toy Story), not the movie. A right length proves nothing: a sequel of
+    the same length stays dropped by its year."""
+    _enable_runtime_check(monkeypatch, _TOY_STORY, 81)
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("full", "Toy Story 1995 1080p CZ.mkv", 4_000_000_000),
+        SearchResult("spec", "Toy Story That Time Forgot 1080p CZ.mkv", 1_000_000_000),
+        SearchResult("unk", "Toy Story 1995 CZ dabing.avi", 700_000_000),
+        SearchResult("seq", "Toy Story 2 1999 1080p CZ.mkv", 3_000_000_000),
+    ]
+    fake_webshare.file_infos = {"full": {**_INFO, "length": 81 * 60},
+                                "spec": {**_INFO, "length": 22 * 60},
+                                "unk": {**_INFO, "length": 0},
+                                "seq": {**_INFO, "length": 81 * 60}}
+    guids = _feed(client, t="movie", tmdbid="862", cat="2000")
+    assert "full" in guids and "unk" in guids           # unknown length is kept
+    assert "spec" not in guids and "seq" not in guids
+
+
+def test_runtime_check_keeps_long_editions(client, fake_webshare, monkeypatch):
+    """A 170-minute cut of a 100-minute film passes, and a named edition passes
+    however long it is."""
+    _enable_runtime_check(monkeypatch, ("Film", "", "en", (), 2001), 100)
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("ext", "Film 2001 Extended Edition 1080p.mkv", 9_000_000_000),
+        SearchResult("long", "Film 2001 1080p.mkv", 8_000_000_000),
+        SearchResult("theat", "Film 2001 720p.mkv", 4_000_000_000),
+    ]
+    fake_webshare.file_infos = {"ext": {**_INFO, "length": 260 * 60},
+                                "long": {**_INFO, "length": 170 * 60},
+                                "theat": {**_INFO, "length": 100 * 60}}
+    assert _feed(client, t="movie", tmdbid="1", cat="2000") == ["ext", "long", "theat"]
+
+
+def test_episode_search_drops_other_content_by_runtime(client, fake_webshare, monkeypatch):
+    """A 7-minute Bluey episode vs an hour-long file that merely carries the
+    right marker: the episode's own runtime tells them apart. A multi-episode
+    file is not rejected for running several episodes long."""
+    _enable_runtime_check(monkeypatch, ("Bluey", "", "en", (), 2018), 7)
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("ok", "Bluey S01E01 Magic Xylophone 1080p CZ.mkv", 300_000_000),
+        SearchResult("long", "Bluey S01E01 1080p BluRay Remux CZ.mkv", 10_700_000_000),
+        SearchResult("multi", "Bluey S01E01-E03 1080p CZ.mkv", 900_000_000),
+    ]
+    fake_webshare.file_infos = {"ok": {**_INFO, "length": 7 * 60},
+                                "long": {**_INFO, "length": 59 * 60},
+                                "multi": {**_INFO, "length": 21 * 60}}
+    guids = _feed(client, t="tvsearch", tvdbid="353546", season="1", ep="1")
+    assert sorted(guids) == ["multi", "ok"]
+
+
+def test_season_search_is_lenient_with_a_show_level_runtime(client, fake_webshare, monkeypatch):
+    """A season search only has the show's typical episode length: a 120-minute
+    episode of a 40-minute show passes, a 5-minute clip still doesn't."""
+    _enable_runtime_check(monkeypatch, ("Show", "", "en", (), 2018), 40, exact=False)
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("e1", "Show S01E01 1080p.mkv", 6_000_000_000),
+        SearchResult("e2", "Show S01E02 1080p.mkv", 2_000_000_000),
+        SearchResult("e3", "Show S01E03 1080p.mkv", 100_000_000),
+    ]
+    fake_webshare.file_infos = {"e1": {**_INFO, "length": 120 * 60},
+                                "e2": {**_INFO, "length": 40 * 60},
+                                "e3": {**_INFO, "length": 5 * 60}}
+    assert _feed(client, t="tvsearch", tvdbid="1", season="1") == ["e1", "e2"]
+
+
+def test_runtime_check_skips_specials(client, fake_webshare, monkeypatch):
+    """Season 0 (specials) has no meaningful runtime: no lookup, nothing dropped."""
+    calls = []
+    _enable_runtime_check(monkeypatch, ("Bluey", "", "en", (), 2018), 7, calls=calls)
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [SearchResult("sp", "Bluey S00E01 Special 1080p CZ.mkv", 2_000_000_000)]
+    fake_webshare.file_infos = {"sp": {**_INFO, "length": 60 * 60}}
+    assert _feed(client, t="tvsearch", tvdbid="353546", season="0", ep="1") == ["sp"]
+    assert calls == []
+
+
+def test_runtime_check_refills_from_the_next_page(client, fake_webshare, monkeypatch):
+    """Files dropped by length are replaced from the next Webshare page: with
+    limit=2, two short files followed by two good ones still give two results."""
+    _enable_runtime_check(monkeypatch, _TOY_STORY, 81)
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("s1", "Toy Story 1995 extra A 1080p CZ.mkv", 9_000_000_000),
+        SearchResult("s2", "Toy Story 1995 extra B 1080p CZ.mkv", 8_000_000_000),
+        SearchResult("f1", "Toy Story 1995 1080p CZ.mkv", 4_000_000_000),
+        SearchResult("f2", "Toy Story 1995 720p CZ.mkv", 2_000_000_000),
+    ]
+    fake_webshare.file_infos = {"s1": {**_INFO, "length": 10 * 60}, "s2": {**_INFO, "length": 12 * 60},
+                                "f1": {**_INFO, "length": 81 * 60}, "f2": {**_INFO, "length": 80 * 60}}
+    assert _feed(client, t="movie", tmdbid="862", cat="2000", limit="2") == ["f1", "f2"]
+    assert fake_webshare.searches == [("Toy Story", 2, 0), ("Toy Story", 2, 2)]
+
+
+def test_runtime_check_refill_is_bounded(client, fake_webshare, monkeypatch):
+    """However many files are dropped, only a fixed number of extra pages is
+    fetched; then the feed answers with what passed."""
+    from app import torznab
+    _enable_runtime_check(monkeypatch, _TOY_STORY, 81)
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [SearchResult(f"s{i}", f"Toy Story 1995 clip {i} CZ.mkv", 100 - i)
+                             for i in range(20)]
+    fake_webshare.file_infos = {f"s{i}": {**_INFO, "length": 5 * 60} for i in range(20)}
+    assert _feed(client, t="movie", tmdbid="862", cat="2000", limit="2") == []
+    assert [o for _q, _l, o in fake_webshare.searches] == \
+        [2 * p for p in range(1 + torznab._RUNTIME_EXTRA_PAGES)]
+
+
+def test_runtime_check_answers_within_its_budget(client, fake_webshare, monkeypatch):
+    """A probe that doesn't finish within the budget doesn't hold the search
+    up: its file goes out unmeasured (fail open), the measured ones are judged."""
+    import asyncio
+    import time
+    from app import torznab
+    _enable_runtime_check(monkeypatch, _TOY_STORY, 81)
+    monkeypatch.setattr(torznab, "_RUNTIME_BUDGET", 0.5)
+    real = fake_webshare.file_info
+
+    async def file_info(ident):
+        if ident == "slow":
+            await asyncio.sleep(3600)
+        return await real(ident)
+
+    fake_webshare.file_info = file_info
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("slow", "Toy Story 1995 2160p CZ.mkv", 9_000_000_000),
+        SearchResult("short", "Toy Story 1995 clip CZ.mkv", 5_000_000_000),
+        SearchResult("full", "Toy Story 1995 1080p CZ.mkv", 4_000_000_000),
+    ]
+    fake_webshare.file_infos = {"short": {**_INFO, "length": 5 * 60},
+                                "full": {**_INFO, "length": 81 * 60}}
+    started = time.monotonic()
+    assert _feed(client, t="movie", tmdbid="862", cat="2000") == ["slow", "full"]
+    assert time.monotonic() - started < 5
+
+
+def test_runtime_check_budget_covers_the_tmdb_lookup(client, fake_webshare, monkeypatch):
+    """A TMDB runtime lookup that outlives the budget switches the check off for
+    that search instead of blocking it."""
+    import asyncio
+    import time
+    from app import torznab
+    _enable_runtime_check(monkeypatch, _TOY_STORY, 81)
+    monkeypatch.setattr(torznab, "_RUNTIME_BUDGET", 0.3)
+
+    async def hung(*args, **kwargs):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(torznab, "tmdb_runtime", hung)
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [SearchResult("short", "Toy Story 1995 clip CZ.mkv", 5_000_000_000)]
+    fake_webshare.file_infos = {"short": {**_INFO, "length": 5 * 60}}
+    started = time.monotonic()
+    assert _feed(client, t="movie", tmdbid="862", cat="2000") == ["short"]
+    assert time.monotonic() - started < 5
+
+
+def test_runtime_check_off_without_known_runtime(client, fake_webshare, monkeypatch):
+    """No TMDB runtime -> nothing is dropped by length."""
+    _enable_runtime_check(monkeypatch, _TOY_STORY, 0, exact=False)
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [SearchResult("spec", "Toy Story 1995 1080p CZ.mkv", 1_000_000_000)]
+    fake_webshare.file_infos = {"spec": {"length": 60, "width": 1920, "height": 1080}}
+    assert _feed(client, t="movie", tmdbid="862", cat="2000") == ["spec"]

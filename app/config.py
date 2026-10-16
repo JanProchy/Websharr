@@ -16,6 +16,9 @@ class Config:
         # TMDB API Read Access Token (v4 bearer) for Czech-title lookups; the UI
         # value in settings.json overrides this.
         self.tmdb_token = os.environ.get("TMDB_TOKEN", "")
+        # Drop files whose duration is far off the TMDB runtime (opt-in, off by
+        # default); the UI value in settings.json overrides this.
+        self.runtime_check = os.environ.get("RUNTIME_CHECK", "").strip().lower() in ("1", "true", "yes", "on")
         # Apprise notification URLs (comma/newline separated) and the VIP-expiry
         # warning threshold in days; UI values override these.
         self.notify_urls = [u.strip() for u in re.split(r"[,\n]", os.environ.get("NOTIFY_URLS", "")) if u.strip()]
