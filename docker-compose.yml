@@ -17,6 +17,8 @@ services:
             WEBSHARE_PASSWORD: ${WEBSHARE_PASSWORD:-}
             WEBSHARR_API_KEY: ${WEBSHARR_API_KEY:-}
             TMDB_TOKEN: ${TMDB_TOKEN:-}
+            RUNTIME_CHECK: ${RUNTIME_CHECK:-false}
+            MOVIE_TITLE_PREFIX: ${MOVIE_TITLE_PREFIX:-false}
             NOTIFY_URLS: ${NOTIFY_URLS:-}
             MAX_CONCURRENT_DOWNLOADS: "2"
         volumes:

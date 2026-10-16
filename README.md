@@ -128,6 +128,69 @@ looking the request up in **TMDB**:
 The token is optional — without it, aliases still work and everything else runs
 as normal; you just lose the automatic Czech-title resolution.
 
+### Runtime check (optional, off by default)
+
+With the token, ID-based searches (what Sonarr/Radarr send via Prowlarr) can also
+**check each file's duration** against the TMDB runtime of the movie or episode
+and drop files far off it — an hour-long documentary that happens to start with
+a short show's Czech name, a 20-minute special named like the feature, a
+5-minute excerpt. Turn it on in **Settings → Czech titles (TMDB)** or with
+`RUNTIME_CHECK=true` (the UI value wins); off, searches behave exactly as
+without it (no runtime lookups, no extra probes).
+
+- Only a mismatch counts: a file of the right length is never taken as proof
+  that it is the right title.
+- Movies pass from 0.6× to 2× the runtime; a named edition (*Extended*,
+  *Director's Cut*, *Uncut*, *Special Edition*, …) may run any amount longer.
+- Episodes pass from 0.5× to 2.6× the episode's own runtime; multi-episode
+  files (`S01E01E02`, `S01E01-E03`) may run longer. When TMDB has only the
+  show's typical episode length (season searches, episodes without a runtime),
+  only files far shorter than it (< 0.35×) are dropped. Specials (season 0) are
+  not checked.
+- Files of unknown length always pass.
+- Dropped files are replaced from up to two further Webshare result pages, so
+  *arr still gets up to the limit it asked for when more good files exist.
+- The check gets 30 s per search: whatever isn't measured by then goes out
+  unchecked rather than holding the search up (Sonarr gives an indexer 100 s).
+
+### Movie title prefix (optional, off by default)
+
+A movie file named only in Czech (`Pribeh hracek 1080p CZ.mkv`) doesn't parse
+to the movie in Radarr. Matched only by the echoed id, its grab is then held for
+a **manual import** ("matched to movie by ID, Manual Import required"). With
+this option an ID-based movie search puts the TMDB title and year in front —
+`Toy Story 1995 - Pribeh hracek 1080p CZ` — so Radarr maps the release by title
+and imports it by itself. That removes Radarr's safety net, so the prefix is
+added only when **all** of these hold (otherwise the name goes out unchanged
+and Radarr asks for a manual import, as without the option):
+
+- The name, without its extension, **begins with the TMDB title** or one of the
+  film's TMDB original/Czech titles, followed by nothing but the year, language
+  markers (`CZ`, `dabing`, `titulky`, …) and then a technical tag (resolution,
+  source, codec, audio) with the release details after it. No other word
+  (`Rocky Returns`), no number or Roman numeral (`Rocky 2`, `Rocky V`,
+  `Rocky CZ 2` — a language marker doesn't hide what follows it) before the
+  tags, and no stray number, part, CD or sample marker anywhere in the name.
+- **Every year** in the name is the TMDB year, exactly.
+- A numbered title (`Rocky II`) must carry its number (`II` or `2`).
+- The file's **length is known** (Webshare file info) and within 0.85–1.25× of
+  the TMDB runtime. Unknown length or runtime means no prefix, and a matching
+  length is never enough on its own.
+- TMDB was asked which other films the name could be — another film of the same
+  title (search, English and Czech) or a part of the movie's collection whose
+  title extends it (`Rocky` → `Rocky II`). If there is one, only a name with
+  the year gets the prefix; if one has the same year too, or the name also
+  carries the words such a part adds, none does. Only the first page of each
+  search is looked at. If TMDB can't answer (error, or 15 s per search), no
+  prefix.
+
+A name that already starts with `<title> <year>` is left as it is. Turn it on in
+**Settings → Czech titles (TMDB)** or with `MOVIE_TITLE_PREFIX=true` (the UI
+value wins); it needs the TMDB token. Off, release names are exactly as without
+it and nothing extra is looked up. It works with or without the runtime check.
+The prefixed titles are checked against a Radarr-like title/year parser in the
+tests; that is not a live Radarr import test.
+
 ## Monitoring and notifications
 
 - **Dashboard widget.** `GET /stats?apikey=…` returns compact JSON (active/queued
@@ -148,6 +211,8 @@ as normal; you just lose the automatic Czech-title resolution.
 | `WEBSHARE_USERNAME` / `WEBSHARE_PASSWORD` | — | Webshare.cz credentials (initial default; editable in the UI) |
 | `WEBSHARR_API_KEY` | auto-generated | API key for the Newznab/SABnzbd endpoints; set to pin a fixed value |
 | `TMDB_TOKEN` | — | TMDB API Read Access Token for [Czech-title](#czech-titles-tmdb) lookups (UI value wins) |
+| `RUNTIME_CHECK` | `false` | `true` drops files far off the TMDB runtime ([runtime check](#runtime-check-optional-off-by-default); UI value wins) |
+| `MOVIE_TITLE_PREFIX` | `false` | `true` puts the TMDB title and year in front of unambiguous movie names ([movie title prefix](#movie-title-prefix-optional-off-by-default); UI value wins) |
 | `NOTIFY_URLS` | — | Apprise URLs (comma-separated) for failure/VIP notifications (UI value wins) |
 | `NOTIFY_VIP_DAYS` | `7` | Warn when Webshare VIP has this many days left or fewer |
 | `SETTINGS_FILE` | `/config/settings.json` | persisted settings (UI account, Webshare login, API key) |

@@ -253,6 +253,7 @@ async def lookup_by_id(token: str, kind: str, tmdbid=None, imdbid=None,
                 entry = await _find(client, imdb, "imdb_id")
             if entry:
                 disp, orig, lang, czech, year = await _resolve(client, entry, kind)
+                _remember(kind, (tmdbid, tvdbid, imdb), entry)
     except (httpx.HTTPError, KeyError, ValueError) as exc:
         logger.warning("TMDB id lookup %s (tmdb=%s tvdb=%s imdb=%s) failed: %s",
                        kind, tmdbid, tvdbid, imdb, exc)
@@ -263,3 +264,167 @@ async def lookup_by_id(token: str, kind: str, tmdbid=None, imdbid=None,
         logger.info("TMDB: %s id(tmdb=%s tvdb=%s imdb=%s) -> display=%r original=%r lang=%r czech=%r year=%r",
                     kind, tmdbid, tvdbid, imdb, disp, orig, lang, czech, year)
     return found
+
+
+# What lookup_by_id already learned, so the runtime check doesn't ask TMDB again:
+# the TMDB id behind an external id, and the runtime from a full details entry
+# (a /find hit is a summary without one). Runtimes are cached as (minutes, exact).
+_CACHE_MAX = 2000
+_resolved: dict[tuple, int] = {}
+_runtime_cache: dict[tuple, tuple[int, bool]] = {}
+
+
+def _put(cache: dict, key, value) -> None:
+    if len(cache) >= _CACHE_MAX:
+        cache.pop(next(iter(cache)))
+    cache[key] = value
+
+
+def _entry_runtime(entry: dict, kind: str) -> int:
+    if kind == "movie":
+        return int(entry.get("runtime") or 0)
+    runs = [x for x in entry.get("episode_run_time") or [] if x]
+    return int(runs[0]) if runs else int((entry.get("last_episode_to_air") or {}).get("runtime") or 0)
+
+
+def _remember(kind: str, ids: tuple, entry: dict) -> None:
+    tid = entry.get("id")
+    if not tid:
+        return
+    _put(_resolved, (kind, *ids), tid)
+    minutes = _entry_runtime(entry, kind)
+    if minutes:
+        # a show's details only give a typical episode length, never exact
+        _put(_runtime_cache, (kind, tid, None, None), (minutes, kind == "movie"))
+
+
+async def runtime(token: str, kind: str, tmdbid=None, imdbid=None, tvdbid=None,
+                  season=None, ep=None) -> tuple[int, bool]:
+    """Expected running time in minutes — of the movie, or of one episode — and
+    whether it is exact: (0, False) when unknown.
+
+    Used to sanity-check Webshare files, whose names alone can't tell a 7-minute
+    Bluey episode from an hour-long "Blue Planet" documentary, a feature from a
+    short special, or a full episode from a 5-minute excerpt. For an episode the
+    episode's own runtime is preferred (exact); a season search (no episode), or
+    an episode TMDB has no runtime for, falls back to the show's typical episode
+    length, which is not exact — episodes of one show can run far longer. Reuses
+    what lookup_by_id fetched for the same search, so a movie usually costs no
+    extra TMDB call.
+    """
+    if not token or kind not in ("tv", "movie"):
+        return 0, False
+    imdb = _imdb_id(imdbid)
+    if not (tmdbid or imdb or tvdbid):
+        return 0, False
+    # *arr sends the id as a string, TMDB answers with an int: key caches by int
+    tid = (int(tmdbid) if str(tmdbid).isdigit() else tmdbid) if tmdbid else \
+        _resolved.get((kind, tmdbid, tvdbid, imdb))
+    episode = (season, ep) if kind == "tv" and season is not None and ep is not None else (None, None)
+    if tid and (kind, tid, *episode) in _runtime_cache:
+        return _runtime_cache[(kind, tid, *episode)]
+    minutes, exact = 0, False
+    try:
+        async with httpx.AsyncClient(timeout=10.0, headers=_headers(token)) as client:
+            if not tid:
+                for ext, source in ((tvdbid, "tvdb_id"), (imdb, "imdb_id")):
+                    if not ext:
+                        continue
+                    r = await client.get(f"{_BASE}/find/{ext}", params={"external_source": source})
+                    hits = (r.json().get(f"{kind}_results") or []) if r.status_code == 200 else []
+                    if hits:
+                        tid = hits[0].get("id")
+                        break
+            if not tid:
+                return 0, False
+            if episode[0] is not None:
+                r = await client.get(f"{_BASE}/tv/{tid}/season/{int(season)}/episode/{int(ep)}")
+                if r.status_code == 200:
+                    minutes = int(r.json().get("runtime") or 0)
+                    exact = bool(minutes)
+            if not minutes:
+                minutes, exact = _runtime_cache.get((kind, tid, None, None), (0, False))
+            if not minutes:
+                r = await client.get(f"{_BASE}/{kind}/{tid}")
+                if r.status_code == 200:
+                    minutes = _entry_runtime(r.json(), kind)
+                    exact = bool(minutes) and kind == "movie"
+    except (httpx.HTTPError, KeyError, ValueError, TypeError) as exc:
+        logger.warning("TMDB runtime %s (tmdb=%s tvdb=%s imdb=%s) failed: %s",
+                       kind, tmdbid, tvdbid, imdb, exc)
+        return 0, False
+    _put(_runtime_cache, (kind, tid, *episode), (minutes, exact))
+    return minutes, exact
+
+
+# Films a movie file could be mistaken for, for the opt-in title prefix (see
+# torznab.movie_prefix_refusal). Only successful lookups are cached.
+_parts_cache: dict[int, list[tuple[int, str, int]]] = {}
+_hits_cache: dict[str, list[tuple[int, str, int]]] = {}
+
+
+def _films(items: list) -> list[tuple[int, str, int]]:
+    """(id, title, year) for every title of each movie in a TMDB list."""
+    out = []
+    for it in items or []:
+        for key in ("title", "original_title"):
+            name = str(it.get(key) or "").strip()
+            if name:
+                out.append((it.get("id"), name, _year(it)))
+    return out
+
+
+async def movie_rivals(token: str, titles, tmdbid=None, imdbid=None
+                       ) -> list[tuple[str, int, bool]] | None:
+    """(title, year, same_collection) of the other TMDB movies a file named
+    after one of `titles` could be, or None when TMDB can't tell (fail closed:
+    the caller then claims no identity).
+
+    Two sources, each in English and Czech: the first page of a title search for
+    each of `titles` (another film of the same name — "Rocky" 1976 and 1981) and
+    the other parts of the movie's collection ("Rocky II", "Rocky Balboa"). At
+    most 4 + 2 × len(titles) calls, each cached once it succeeds.
+    """
+    if not token:
+        return None
+    imdb = _imdb_id(imdbid)
+    tid = (int(tmdbid) if str(tmdbid).isdigit() else None) if tmdbid else \
+        _resolved.get(("movie", tmdbid, None, imdb))
+    if not (tid or imdb):
+        return None
+    rivals: list[tuple[str, int, bool]] = []
+    try:
+        async with httpx.AsyncClient(timeout=10.0, headers=_headers(token)) as client:
+
+            async def get(url: str, **params) -> dict:
+                r = await client.get(url, params=params or None)
+                if r.status_code != 200:
+                    raise ValueError(f"HTTP {r.status_code} for {url}")
+                return r.json()
+
+            if not tid:
+                hits = (await get(f"{_BASE}/find/{imdb}", external_source="imdb_id")).get("movie_results") or []
+                tid = hits[0].get("id") if hits else None
+                if not tid:
+                    return None
+            tid = int(tid)
+            if tid not in _parts_cache:
+                cid = ((await get(f"{_BASE}/movie/{tid}")).get("belongs_to_collection") or {}).get("id")
+                parts: list[tuple[int, str, int]] = []
+                if cid:
+                    for params in ({}, {"language": "cs-CZ"}):
+                        parts += _films((await get(f"{_BASE}/collection/{cid}", **params)).get("parts"))
+                _put(_parts_cache, tid, parts)
+            rivals += [(name, year, True) for pid, name, year in _parts_cache[tid] if pid != tid]
+            for title in dict.fromkeys(t for t in titles if t):
+                key = title.casefold()
+                if key not in _hits_cache:
+                    found: list[tuple[int, str, int]] = []
+                    for params in ({}, {"language": "cs-CZ"}):
+                        found += _films((await get(f"{_BASE}/search/movie", query=title, **params)).get("results"))
+                    _put(_hits_cache, key, found)
+                rivals += [(name, year, False) for hid, name, year in _hits_cache[key] if hid != tid]
+    except (httpx.HTTPError, KeyError, ValueError, TypeError, AttributeError) as exc:
+        logger.warning("TMDB rivals of movie %s failed: %s", tmdbid or imdb, str(exc) or type(exc).__name__)
+        return None
+    return rivals

@@ -59,6 +59,15 @@ class Settings:
         # searched under its Czech title looked up from TMDB. Env var is the
         # initial default; a value saved in the UI overrides it.
         self.tmdb_token: str = config.tmdb_token
+        # Runtime check: with the TMDB token, ID-based searches drop files whose
+        # duration is far off the TMDB runtime. Off unless enabled (env var
+        # RUNTIME_CHECK is the initial default, the UI toggle overrides it).
+        self.runtime_check: bool = config.runtime_check
+        # Movie title prefix: with the TMDB token, an id-based movie search puts
+        # "<TMDB title> <year> - " in front of a file name that leaves no doubt
+        # which film it is but that Radarr can't parse. Off unless enabled (env
+        # var MOVIE_TITLE_PREFIX is the initial default, the UI toggle wins).
+        self.movie_title_prefix: bool = config.movie_title_prefix
         # Concurrent-download limit; env var is the initial default, editable in
         # the UI (Settings and the Queue page).
         self.max_concurrent: int = config.max_concurrent
@@ -93,6 +102,11 @@ class Settings:
         aliases = data.get("aliases", [])
         self.aliases = [a for a in aliases if a.get("from") and a.get("to")]
         self.tmdb_token = data.get("tmdb_token") or config.tmdb_token
+        # A saved False must win over the env default, so no `or` fallback here.
+        check = data.get("runtime_check")
+        self.runtime_check = check if isinstance(check, bool) else config.runtime_check
+        prefix = data.get("movie_title_prefix")
+        self.movie_title_prefix = prefix if isinstance(prefix, bool) else config.movie_title_prefix
         try:
             self.max_concurrent = max(1, int(data.get("max_concurrent") or config.max_concurrent))
         except (TypeError, ValueError):
@@ -120,6 +134,8 @@ class Settings:
             "secret": self.secret,
             "aliases": self.aliases,
             "tmdb_token": self.tmdb_token,
+            "runtime_check": self.runtime_check,
+            "movie_title_prefix": self.movie_title_prefix,
             "max_concurrent": self.max_concurrent,
             "notify_urls": self.notify_urls,
             "notify_vip_days": self.notify_vip_days,

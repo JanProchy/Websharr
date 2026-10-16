@@ -27,6 +27,7 @@ class FakeWebshareClient:
         self.results: list[SearchResult] = []
         self.file_infos: dict[str, dict] = {}
         self.fuzzy = False  # True = return everything, like Webshare fulltext
+        self.searches: list[tuple[str, int, int]] = []  # (query, limit, offset) per call
         self.file_link_url = "http://127.0.0.1:1/file.mkv"  # unreachable by default
 
     def set_credentials(self, username: str, password: str = "", password_digest: str = ""):
@@ -47,11 +48,12 @@ class FakeWebshareClient:
         return fake_digest(username, password)
 
     async def search(self, query: str, limit: int = 60, offset: int = 0):
-        if self.fuzzy:
-            return list(self.results)
-        return [r for r in self.results if all(
+        # Pages like Webshare: at most `limit` results, starting at `offset`.
+        self.searches.append((query, limit, offset))
+        hits = list(self.results) if self.fuzzy else [r for r in self.results if all(
             part.lower() in r.name.lower() for part in query.split()
         )]
+        return hits[offset:offset + limit]
 
     async def file_link(self, ident: str) -> str:
         return self.file_link_url
@@ -100,3 +102,20 @@ def _fresh_probe_state(monkeypatch):
     torznab._probe_cache.clear()
     monkeypatch.setattr(torznab, "_probe_sem", None)
     monkeypatch.setattr(torznab, "_PROBE_RETRIES", (0, 0, 0))
+
+
+@pytest.fixture(autouse=True)
+def _no_tmdb_runtime(monkeypatch):
+    """Tests never reach TMDB for runtimes or rival films: a test that turns the
+    runtime check or the title prefix on patches what it needs itself."""
+    import app.torznab as torznab
+
+    async def unknown(*args, **kwargs):
+        return 0, False
+
+    monkeypatch.setattr(torznab, "tmdb_runtime", unknown)
+
+    async def no_rivals(*args, **kwargs):
+        return None  # "TMDB couldn't tell": the title prefix fails closed
+
+    monkeypatch.setattr(torznab, "tmdb_movie_rivals", no_rivals)
