@@ -78,7 +78,8 @@ class Job:
 
 class DownloadManager:
     def __init__(self, client: WebshareClient, complete_dir: Path, incomplete_dir: Path,
-                 state_file: Path, max_concurrent: int = 2, notify=None):
+                 state_file: Path, max_concurrent: int = 2, notify=None,
+                 categories: list[str] | None = None):
         self._client = client
         self._complete_dir = complete_dir
         self._incomplete_dir = incomplete_dir
@@ -88,6 +89,9 @@ class DownloadManager:
         self._tasks: dict[str, asyncio.Task] = {}
         # Optional async callback (title, body) for failure notifications.
         self._notify = notify
+        # Configured SABnzbd categories (without "*"), reported to *arr.
+        self._categories = list(categories) if categories is not None else ["tv", "movies"]
+        self._warned_categories: set[str] = set()
 
     @property
     def max_concurrent(self) -> int:
@@ -101,13 +105,45 @@ class DownloadManager:
         self._schedule()
         return self._max_concurrent
 
+    @property
+    def categories(self) -> list[str]:
+        return list(self._categories)
+
+    def set_categories(self, categories: list[str]) -> list[str]:
+        """Replace the category list at runtime. The folders are created first:
+        if that fails (OSError) the previous list stays in place."""
+        self.ensure_category_dirs(categories)
+        self._categories = list(categories)
+        return self.categories
+
+    def ensure_category_dirs(self, categories: list[str]) -> None:
+        """Create COMPLETE_DIR and COMPLETE_DIR/<cat> for each category. On
+        failure (e.g. a regular file named like the category) the category
+        folders this call created are removed again and the OSError is raised."""
+        self._complete_dir.mkdir(parents=True, exist_ok=True)
+        created: list[Path] = []
+        try:
+            for category in categories:
+                path = self._complete_dir / category
+                if not path.is_dir():
+                    path.mkdir(exist_ok=True)
+                    created.append(path)
+        except OSError:
+            for path in reversed(created):
+                try:
+                    path.rmdir()
+                except OSError:
+                    pass
+            raise
+
     def ensure_dirs(self) -> None:
         """Pre-create the category folders so *arr's download-client health
         check ("directory does not exist inside the container") passes before
-        the first download of that category completes."""
+        the first download of that category completes. COMPLETE_DIR itself is
+        created even with no categories configured: get_config reports it as
+        the folder of the implicit "*" category."""
         self._incomplete_dir.mkdir(parents=True, exist_ok=True)
-        for category in ("tv", "movies"):
-            (self._complete_dir / category).mkdir(parents=True, exist_ok=True)
+        self.ensure_category_dirs(self._categories)
 
     # -- persistence -------------------------------------------------------
 
@@ -147,6 +183,13 @@ class DownloadManager:
     # -- public API --------------------------------------------------------
 
     def add(self, ident: str, name: str, size: int, category: str, title: str = "") -> Job:
+        # An unconfigured category still downloads (into complete/<cat>): rejecting
+        # it would make *arr mark the release failed and blocklist it.
+        if (category and category != "*" and category not in self._categories
+                and category not in self._warned_categories):
+            self._warned_categories.add(category)
+            logger.warning("Category '%s' is not configured in Settings; downloading into %s anyway",
+                           category, self._complete_dir / category)
         job = Job(
             nzo_id=f"SABnzbd_nzo_{uuid.uuid4().hex[:12]}",
             ident=ident,

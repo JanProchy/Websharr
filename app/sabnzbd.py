@@ -76,7 +76,7 @@ def _history_slot(job: Job) -> dict:
     }
 
 
-def _get_config_payload() -> dict:
+def _get_config_payload(categories: list[str]) -> dict:
     return {
         "config": {
             "misc": {
@@ -95,8 +95,9 @@ def _get_config_payload() -> dict:
             },
             "categories": [
                 {"name": "*", "pp": "3", "script": "None", "dir": "", "priority": 0},
-                {"name": "tv", "pp": "3", "script": "None", "dir": "tv", "priority": 0},
-                {"name": "movies", "pp": "3", "script": "None", "dir": "movies", "priority": 0},
+            ] + [
+                {"name": cat, "pp": "3", "script": "None", "dir": cat, "priority": 0}
+                for cat in categories
             ],
             "servers": [{"name": "websharr", "host": "webshare.cz", "connections": 4}],
             "sorters": [],
@@ -163,10 +164,10 @@ async def sabnzbd_api(request: Request):
         return JSONResponse({"version": SAB_VERSION})
 
     if mode == "get_config":
-        return JSONResponse(_get_config_payload())
+        return JSONResponse(_get_config_payload(manager.categories))
 
     if mode == "get_cats":
-        return JSONResponse({"categories": ["*", "tv", "movies"]})
+        return JSONResponse({"categories": ["*", *manager.categories]})
 
     if mode == "fullstatus":
         return JSONResponse({"status": {"version": SAB_VERSION, "uptime": "1h",

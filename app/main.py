@@ -65,6 +65,7 @@ async def lifespan(app: FastAPI):
         state_file=config.state_file,
         max_concurrent=settings.max_concurrent,
         notify=_send_notification,
+        categories=settings.categories,
     )
     manager.ensure_dirs()
     manager.load_state()

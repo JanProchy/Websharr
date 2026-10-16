@@ -232,6 +232,49 @@ def test_ensure_dirs_creates_category_folders(tmp_path, monkeypatch):
         assert (tmp_path / "incomplete").is_dir()
 
 
+def test_ensure_dirs_follows_configured_categories(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "categories", ["tv", "tv-kids"])
+    with _start_app(tmp_path, monkeypatch, "http://127.0.0.1:1/x"):
+        assert (tmp_path / "complete" / "tv-kids").is_dir()
+        assert not (tmp_path / "complete" / "movies").exists()
+
+
+def test_ensure_dirs_empty_categories_creates_complete_root(tmp_path, monkeypatch):
+    # No categories configured: only the implicit "*" is offered, and get_config
+    # reports COMPLETE_DIR itself as its folder, so it must exist on fresh storage.
+    monkeypatch.setattr(config, "categories", [])
+    with _start_app(tmp_path, monkeypatch, "http://127.0.0.1:1/x"):
+        assert (tmp_path / "complete").is_dir()
+        assert list((tmp_path / "complete").iterdir()) == []
+        assert (tmp_path / "incomplete").is_dir()
+
+
+def test_set_categories_collision_keeps_previous_list(tmp_path):
+    # A regular file named like a category: set_categories raises before the
+    # list changes and removes the folders it had already created.
+    manager = downloads_module.DownloadManager(
+        FakeWebshareClient(), tmp_path / "complete", tmp_path / "incomplete",
+        tmp_path / "state.json")
+    manager.ensure_dirs()
+    (tmp_path / "complete" / "collision").write_text("not a folder")
+    with pytest.raises(OSError):
+        manager.set_categories(["tv", "newcat", "collision"])
+    assert manager.categories == ["tv", "movies"]
+    assert not (tmp_path / "complete" / "newcat").exists()
+    assert (tmp_path / "complete" / "collision").is_file()
+    assert manager.set_categories(["tv", "newcat"]) == ["tv", "newcat"]
+    assert (tmp_path / "complete" / "newcat").is_dir()
+
+
+def test_categories_env_parsing():
+    from app.config import parse_categories
+    assert parse_categories("tv,movies") == ["tv", "movies"]
+    assert parse_categories(" TV , *, tv-kids,\nmovies_4k,") == ["tv", "tv-kids", "movies_4k"]
+    for bad in ("tv,tv", "tv/kids", "a" * 41, ["tv", 5], [None], None):
+        with pytest.raises(ValueError):
+            parse_categories(bad)
+
+
 def test_retry_unknown_job(client):
     resp = client.get("/sabnzbd/api", params={
         "mode": "retry", "apikey": "testkey", "value": "SABnzbd_nzo_nonexistent",

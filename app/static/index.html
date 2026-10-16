@@ -361,9 +361,9 @@
   .gtype .gt { background: var(--inner); border: none; color: var(--muted); font-weight: 700;
     font-size: 12.5px; padding: 6px 14px; cursor: pointer; }
   .gtype .gt.active { background: var(--accent); color: var(--primary-text); }
-  .gform input { background: var(--inner); border: 1px solid var(--border); border-radius: 7px;
+  .gform input, .gform select { background: var(--inner); border: 1px solid var(--border); border-radius: 7px;
     padding: 6px 10px; color: var(--text); font-weight: 600; outline: none; }
-  .gform input:focus { border-color: var(--accent); }
+  .gform input:focus, .gform select:focus { border-color: var(--accent); }
   .gform .g-series, .gform .g-title { flex: 1; min-width: 140px; }
   .gform .g-season, .gform .g-ep, .gform .g-year { width: 92px; }
   .gform .spacer { flex: 1; }
@@ -713,7 +713,7 @@
         <tr><td>Port</td><td><code>9797</code></td></tr>
         <tr><td>URL Base</td><td><code>/sabnzbd</code></td></tr>
         <tr><td>API Key</td><td>copy from <b>Settings</b></td></tr>
-        <tr><td>Category</td><td><code>tv</code> (Sonarr) · <code>movies</code> (Radarr)</td></tr>
+        <tr><td>Category</td><td><code>tv</code> (Sonarr) · <code>movies</code> (Radarr) · or your own from <b>Settings</b></td></tr>
       </table>
     </div>
 
@@ -825,10 +825,16 @@
         <p class="shint">How many files download from Webshare at the same time. Extra
           grabs wait in the queue. You can also change this right on the
           <b>Queue</b> page.</p>
+        <p class="shint"><b>Categories</b> are offered to Sonarr/Radarr as SABnzbd
+          categories, each downloading into its own folder — add one per extra
+          *arr instance (e.g. <code>tv-kids</code>).</p>
       </div>
       <div class="sform">
         <label>Max concurrent downloads
           <input id="set-maxdl" type="number" min="1" max="10" step="1"></label>
+        <label>Categories (comma-separated)
+          <input id="set-categories" type="text" autocomplete="off" spellcheck="false"
+            placeholder="tv, movies"></label>
         <div class="srow">
           <div class="spacer"></div>
           <button class="primary" id="set-maxdl-save">Save</button>
@@ -1140,6 +1146,7 @@ const App = {
       $("set-dir-complete").value = s.complete_dir;
       $("set-dir-incomplete").value = s.incomplete_dir;
       $("set-maxdl").value = s.max_concurrent || 2;
+      $("set-categories").value = (s.categories || []).join(", ");
       $("set-notify-urls").value = (s.notify_urls || []).join("\n");
       $("set-vip-days").value = s.notify_vip_days ?? 7;
       this.renderVip(s.account);
@@ -1580,9 +1587,21 @@ const App = {
     }
   },
 
-  openGrabForm(r, i) {
+  // SABnzbd categories for the grab form, custom ones from Settings included.
+  async grabCategories() {
+    try { this.categories = (await sab({ mode: "get_cats" })).categories; }
+    catch (e) { /* keep the last known list */ }
+    return this.categories || ["*", "tv", "movies"];
+  },
+
+  async openGrabForm(r, i) {
     const slot = $("search-results").querySelector(`[data-slot="${i}"]`);
     if (slot.firstChild) { slot.innerHTML = ""; return; }  // toggle off
+    const cats = await this.grabCategories();
+    if (slot.firstChild) return;  // a second click opened it meanwhile
+    // tv/movies stay selectable (and the default) even when not configured,
+    // like the direct grab; an unconfigured category still downloads.
+    const options = [...new Set(["tv", "movies", ...cats.filter((c) => c !== "*"), "*"])];
     const isMovie = this.lastSearch.t === "movie";
     const q = esc(this.lastSearch.q);
     const season = ($("season") && $("season").value) || "1";
@@ -1603,28 +1622,37 @@ const App = {
           <input class="g-title" placeholder="Title" value="${q}">
           <input class="g-year" type="number" min="1900" placeholder="Year">
         </div>
+        <select class="g-cat" title="Category (download folder)">
+          ${options.map((c) => `<option value="${esc(c)}">${esc(catLabel(c))}</option>`).join("")}
+        </select>
         <span class="spacer"></span>
         <button class="primary g-go">Grab</button>
         <button class="ghost g-cancel">Cancel</button>
       </div>`;
     const gform = slot.querySelector(".gform");
     let mode = isMovie ? "movie" : "tv";
+    // The category follows Shows/Movies until it is picked by hand.
+    const catSel = gform.querySelector(".g-cat");
+    let catPicked = false;
+    catSel.value = isMovie ? "movies" : "tv";
+    catSel.onchange = () => { catPicked = true; };
     gform.querySelectorAll(".gt").forEach((b) => b.onclick = () => {
       mode = b.dataset.gt;
+      if (!catPicked) catSel.value = mode === "movie" ? "movies" : "tv";
       gform.querySelectorAll(".gt").forEach((x) => x.classList.toggle("active", x === b));
       gform.querySelector(".gfields.tv").style.display = mode === "tv" ? "" : "none";
       gform.querySelector(".gfields.movie").style.display = mode === "movie" ? "" : "none";
     });
     gform.querySelector(".g-cancel").onclick = () => { slot.innerHTML = ""; };
     gform.querySelector(".g-go").onclick = () => {
-      let nzbname, cat;
+      let nzbname;
+      const cat = catSel.value;
       const stem = r.title;
       if (mode === "movie") {
         const title = gform.querySelector(".g-title").value.trim();
         const year = gform.querySelector(".g-year").value.trim();
         if (!title || !year) return;
         nzbname = `${title} (${year}) - ${stem}`;
-        cat = "movies";
       } else {
         const s = gform.querySelector(".g-series").value.trim();
         const se = parseInt(gform.querySelector(".g-season").value, 10);
@@ -1632,7 +1660,6 @@ const App = {
         if (!s || isNaN(se) || isNaN(ee)) return;
         const pad = (n) => String(n).padStart(2, "0");
         nzbname = `${s} S${pad(se)}E${pad(ee)} - ${stem}`;
-        cat = "tv";
       }
       this.doGrab(r, nzbname, cat, gform.querySelector(".g-go"), slot);
     };
@@ -1785,7 +1812,7 @@ $("set-maxdl-save").onclick = async () => {
   const n = Math.max(1, Math.min(parseInt($("set-maxdl").value, 10) || 1, 10));
   $("set-maxdl").value = n;
   try {
-    await uiPost("settings", { max_concurrent: n });
+    await uiPost("settings", { max_concurrent: n, categories: $("set-categories").value });
     sresult("set-maxdl-result", true, "✓ Saved");
     App.refresh(true);
   } catch (e) { sresult("set-maxdl-result", false, e.message); }

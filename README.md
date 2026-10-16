@@ -84,6 +84,10 @@ as torrent and its grabs would be sent to a torrent client instead.
 | API Key | copy from Websharr → Settings |
 | Category | `tv` (Sonarr) / `movies` (Radarr) |
 
+Running a second Sonarr/Radarr instance (e.g. a kids library)? Give it its own
+category — add it under Websharr → Settings → Downloads (or `CATEGORIES`) and it
+downloads into its own `<complete>/<category>` folder.
+
 Host names like `websharr` work when everything shares a Docker network; otherwise
 use the LAN IP and port. Also works through **Prowlarr** — add it there as a
 **Generic Newznab** indexer (same URL/API path/key) and let Prowlarr sync it to
@@ -155,6 +159,7 @@ as normal; you just lose the automatic Czech-title resolution.
 | `INCOMPLETE_DIR` | `/downloads/incomplete` | in-progress files |
 | `STATE_FILE` | `/config/state.json` | queue/history persistence |
 | `MAX_CONCURRENT_DOWNLOADS` | `2` | concurrent downloads |
+| `CATEGORIES` | `tv,movies` | SABnzbd categories offered to *arr, each with its own `COMPLETE_DIR/<cat>` folder (UI value wins) |
 | `SEARCH_LIMIT` | `60` | max results from Webshare per query |
 
 ## How search results are cleaned up

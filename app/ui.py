@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from . import __version__
 from . import notify
 from .applog import records as log_records
-from .config import config
+from .config import config, parse_categories
 from .downloads import DownloadManager, Job
 from .settings import SESSION_TTL, THEMES, hash_password, settings, verify_password
 from .torznab import (
@@ -184,6 +184,7 @@ async def ui_settings_get(request: Request):
         "max_concurrent": request.app.state.downloads.max_concurrent,
         "notify_urls": settings.notify_urls,
         "notify_vip_days": settings.notify_vip_days,
+        "categories": settings.categories,
         "theme": settings.theme,
         "account": getattr(request.app.state, "account", None),
     }
@@ -216,6 +217,11 @@ async def ui_settings_post(request: Request):
     if not _authorized(request):
         return _unauthorized()
     body = await request.json()
+    downloads: DownloadManager = request.app.state.downloads
+    # Validate every submitted field before applying any: the new values are
+    # collected in `changes` (Settings attribute -> value) and only written once
+    # all of them passed, so a rejected save leaves live and saved state as is.
+    changes: dict = {}
 
     if "webshare_username" in body:
         ws_user = (body.get("webshare_username") or "").strip()
@@ -227,8 +233,8 @@ async def ui_settings_post(request: Request):
                 return JSONResponse(
                     {"error": f"Could not reach Webshare.cz to store the password securely: {exc}"},
                     status_code=502)
-            settings.webshare_password = ""
-            settings.webshare_password_digest = digest
+            changes["webshare_password"] = ""
+            changes["webshare_password_digest"] = digest
         elif ws_user != config.webshare_username:
             # The digest is salted per account, so a new account needs its password.
             return JSONResponse(
@@ -237,44 +243,73 @@ async def ui_settings_post(request: Request):
         elif not settings.webshare_password_digest and not settings.webshare_password:
             # Credentials so far came from env vars only; carry the password over
             # (it gets converted to a digest on the next startup).
-            settings.webshare_password = config.webshare_password
-        settings.webshare_username = ws_user
+            changes["webshare_password"] = config.webshare_password
+        changes["webshare_username"] = ws_user
 
     if body.get("new_password"):
         if not verify_password(body.get("current_password") or "", settings.auth_password_hash):
             return JSONResponse({"error": "Current password is incorrect"}, status_code=403)
         if len(body["new_password"]) < 4:
             return JSONResponse({"error": "Password must have at least 4 characters"}, status_code=400)
-        settings.auth_password_hash = hash_password(body["new_password"])
+        changes["auth_password_hash"] = hash_password(body["new_password"])
 
     if body.get("regenerate_api_key"):
-        settings.api_key = secrets.token_hex(16)
+        changes["api_key"] = secrets.token_hex(16)
 
     if "tmdb_token" in body:
         # Empty string clears it; a value sets it.
-        settings.tmdb_token = (body.get("tmdb_token") or "").strip()
+        changes["tmdb_token"] = (body.get("tmdb_token") or "").strip()
 
     if "max_concurrent" in body:
         try:
-            n = max(1, min(int(body.get("max_concurrent")), 10))
+            changes["max_concurrent"] = max(1, min(int(body.get("max_concurrent")), 10))
         except (TypeError, ValueError):
             return JSONResponse({"error": "max_concurrent must be a number"}, status_code=400)
-        settings.max_concurrent = request.app.state.downloads.set_max_concurrent(n)
+
+    if "categories" in body:
+        try:
+            changes["categories"] = parse_categories(body.get("categories"))
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
 
     if "notify_urls" in body:
-        settings.notify_urls = _parse_urls(body.get("notify_urls"))
+        changes["notify_urls"] = _parse_urls(body.get("notify_urls"))
     if "notify_vip_days" in body:
         try:
-            settings.notify_vip_days = max(0, int(body.get("notify_vip_days")))
+            changes["notify_vip_days"] = max(0, int(body.get("notify_vip_days")))
         except (TypeError, ValueError):
             return JSONResponse({"error": "notify_vip_days must be a number"}, status_code=400)
     if "theme" in body:
         theme = body.get("theme")
         if theme not in THEMES:
             return JSONResponse({"error": "Unknown theme"}, status_code=400)
-        settings.theme = theme
+        changes["theme"] = theme
 
-    settings.save()
+    if "categories" in changes:
+        # Create complete/<cat> before anything changes, so *arr's folder check
+        # passes right away and a failure (a file in the way) rejects the save.
+        try:
+            downloads.ensure_category_dirs(changes["categories"])
+        except OSError as exc:
+            return JSONResponse({"error": f"Could not create the category folders: {exc}"},
+                                status_code=400)
+
+    # Persist first and only then touch the download manager: a failed write
+    # restores the previous values and must not have rescheduled anything.
+    previous = {name: getattr(settings, name) for name in changes}
+    for name, value in changes.items():
+        setattr(settings, name, value)
+    try:
+        settings.save()
+    except OSError as exc:
+        for name, value in previous.items():
+            setattr(settings, name, value)
+        return JSONResponse({"error": f"Could not save the settings: {exc}"}, status_code=500)
+
+    if "categories" in changes:
+        downloads.set_categories(changes["categories"])
+    if "max_concurrent" in changes:
+        downloads.set_max_concurrent(changes["max_concurrent"])
     settings.apply()
     request.app.state.webshare.set_credentials(
         config.webshare_username, config.webshare_password, config.webshare_password_digest)

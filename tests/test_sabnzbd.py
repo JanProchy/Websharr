@@ -17,6 +17,43 @@ def test_version_and_config(client):
     assert cfg["misc"]["complete_dir"]
 
 
+def test_default_categories(client):
+    cfg = _api(client, mode="get_config").json()["config"]
+    assert [(c["name"], c["dir"]) for c in cfg["categories"]] == [("*", ""), ("tv", "tv"), ("movies", "movies")]
+    assert _api(client, mode="get_cats").json()["categories"] == ["*", "tv", "movies"]
+
+
+def test_configured_categories_reported_and_created(client, tmp_path):
+    # A second *arr instance needs its own category; Sonarr's test checks that it
+    # is listed in get_config and that its folder exists.
+    resp = client.post("/ui/api/settings", params={"apikey": "testkey"},
+                       json={"categories": "tv, tv-kids,movies_4k"})
+    assert resp.status_code == 200
+    cfg = _api(client, mode="get_config").json()["config"]
+    assert [(c["name"], c["dir"]) for c in cfg["categories"]] == [
+        ("*", ""), ("tv", "tv"), ("tv-kids", "tv-kids"), ("movies_4k", "movies_4k")]
+    assert _api(client, mode="get_cats").json()["categories"] == ["*", "tv", "tv-kids", "movies_4k"]
+    assert (tmp_path / "complete" / "tv-kids").is_dir()
+    assert (tmp_path / "complete" / "movies_4k").is_dir()
+    assert client.get("/ui/api/settings", params={"apikey": "testkey"}).json()["categories"] == [
+        "tv", "tv-kids", "movies_4k"]
+
+
+def test_unknown_category_still_queued(client, fake_webshare, caplog):
+    # Rejecting it would make *arr fail and blocklist the release.
+    nzb = build_nzb("cat1", "Film.2024.mkv", 1000)
+    for _ in range(2):
+        resp = client.post(
+            "/sabnzbd/api",
+            params={"mode": "addfile", "apikey": "testkey", "cat": "anime"},
+            files={"nzbfile": ("Film 2024.nzb", nzb.encode(), "application/x-nzb")},
+        )
+        assert resp.json()["status"] is True
+        assert app.state.downloads.get(resp.json()["nzo_ids"][0]).category == "anime"
+    warnings = [r for r in caplog.records if "'anime' is not configured" in r.getMessage()]
+    assert len(warnings) == 1
+
+
 def test_bad_apikey(client):
     resp = client.get("/sabnzbd/api", params={"mode": "version", "apikey": "nope"})
     assert resp.status_code == 403

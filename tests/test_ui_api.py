@@ -144,6 +144,131 @@ def test_ui_grab_sets_parseable_folder_title(client, fake_webshare):
     assert job.job_name.startswith("Skvrna S01E01")
 
 
+def test_settings_rejects_invalid_categories(client):
+    for bad in ("tv,Kids Shows", "tv,../x", "tv,tv", "a" * 41, 5, None, [5], ["tv", None], [["tv"]]):
+        resp = client.post("/ui/api/settings", params={"apikey": "testkey"}, json={"categories": bad})
+        assert resp.status_code == 400, bad
+        assert resp.json()["error"]
+    # Nothing was applied: the defaults stay in place.
+    assert _ui(client, "settings").json()["categories"] == ["tv", "movies"]
+
+
+def _settings_snapshot(client, tmp_path):
+    """Everything a settings save can change: UI view, live manager, SAB view,
+    the settings file and the category folders on disk."""
+    from app.main import app
+    settings_file = tmp_path / "settings.json"
+    return {
+        "ui": _ui(client, "settings").json(),
+        "live": (app.state.downloads.max_concurrent, app.state.downloads.categories),
+        "sab": client.get("/sabnzbd/api", params={
+            "mode": "get_cats", "apikey": "testkey", "output": "json"}).json(),
+        "file": settings_file.read_text() if settings_file.is_file() else None,
+        "dirs": sorted(p.name for p in (tmp_path / "complete").iterdir()),
+    }
+
+
+def _spy_schedule(monkeypatch):
+    from app.main import app
+    calls = []
+    manager = app.state.downloads
+    original = manager._schedule
+    monkeypatch.setattr(manager, "_schedule", lambda: (calls.append(1), original())[1])
+    return calls
+
+
+def test_rejected_multi_field_save_changes_nothing(client, tmp_path, monkeypatch):
+    # Any invalid field rejects the whole save: the valid ones submitted with it
+    # (max_concurrent 2 -> 9, a new category, ...) must not be applied either,
+    # and the download queue must not be rescheduled with the new limit.
+    before = _settings_snapshot(client, tmp_path)
+    assert before["live"] == (2, ["tv", "movies"])
+    calls = _spy_schedule(monkeypatch)
+    valid = {"max_concurrent": 9, "categories": "tv,movies,tv-kids", "notify_vip_days": 3,
+             "notify_urls": "json://example", "tmdb_token": "tok", "theme": "osaka-jade"}
+    for bad in ({"categories": "tv,Kids Shows"}, {"max_concurrent": "lots"},
+                {"notify_vip_days": "soon"}, {"theme": "nope"},
+                {"webshare_username": "someone-else"}):
+        resp = client.post("/ui/api/settings", params={"apikey": "testkey"},
+                           json={**valid, "regenerate_api_key": True, **bad})
+        assert resp.status_code == 400, bad
+        assert resp.json()["error"]
+        assert _settings_snapshot(client, tmp_path) == before, bad
+        assert not (tmp_path / "complete" / "tv-kids").exists()
+    assert calls == []
+
+    # The same values without the bad field are applied everywhere.
+    resp = client.post("/ui/api/settings", params={"apikey": "testkey"}, json=valid)
+    assert resp.status_code == 200
+    after = _settings_snapshot(client, tmp_path)
+    assert after["live"] == (9, ["tv", "movies", "tv-kids"])
+    assert after["ui"]["categories"] == ["tv", "movies", "tv-kids"]
+    assert after["ui"]["notify_vip_days"] == 3
+    assert calls == [1]
+
+
+def test_category_folder_collision_rejects_save(client, tmp_path, monkeypatch):
+    # A regular file where a category folder should go: the save fails with a
+    # controlled error and SAB, UI, the settings file and the disk keep the
+    # previous state (no half-created folders left behind).
+    client.post("/ui/api/settings", params={"apikey": "testkey"}, json={"notify_vip_days": 5})
+    (tmp_path / "complete" / "collision").write_text("not a folder")
+    before = _settings_snapshot(client, tmp_path)
+    calls = _spy_schedule(monkeypatch)
+
+    resp = client.post("/ui/api/settings", params={"apikey": "testkey"},
+                       json={"categories": "tv,newcat,collision", "max_concurrent": 6})
+    assert resp.status_code == 400
+    assert "collision" in resp.json()["error"]
+    assert _settings_snapshot(client, tmp_path) == before
+    assert not (tmp_path / "complete" / "newcat").exists()
+    assert (tmp_path / "complete" / "collision").is_file()
+    assert calls == []
+
+
+def test_settings_write_failure_keeps_previous_state(client, tmp_path, monkeypatch):
+    # settings.json cannot be written (here: a directory in its place). The
+    # in-memory settings are restored and the download manager is untouched.
+    from app.config import config
+    from app.main import app
+    from app.settings import settings
+    blocked = tmp_path / "blocked.json"
+    blocked.mkdir()
+    monkeypatch.setattr(config, "settings_file", blocked)
+    calls = _spy_schedule(monkeypatch)
+
+    resp = client.post("/ui/api/settings", params={"apikey": "testkey"},
+                       json={"categories": "tv,tv-kids", "max_concurrent": 7, "theme": "space-grey"})
+    assert resp.status_code == 500
+    assert resp.json()["error"]
+    assert (settings.categories, settings.max_concurrent, settings.theme) == (
+        ["tv", "movies"], 2, "websharr-blue")
+    assert (app.state.downloads.max_concurrent, app.state.downloads.categories) == (2, ["tv", "movies"])
+    assert calls == []
+
+
+def test_empty_category_list_recreates_complete_root(client, tmp_path):
+    # `categories=[]` leaves only the implicit "*", whose folder is COMPLETE_DIR
+    # itself (get_config dir ""); saving it must (re)create that root.
+    import shutil
+    shutil.rmtree(tmp_path / "complete")
+    resp = client.post("/ui/api/settings", params={"apikey": "testkey"}, json={"categories": []})
+    assert resp.status_code == 200
+    assert (tmp_path / "complete").is_dir()
+    assert client.get("/sabnzbd/api", params={
+        "mode": "get_cats", "apikey": "testkey", "output": "json"}).json()["categories"] == ["*"]
+
+
+def test_grab_form_offers_configured_categories(client):
+    # The manual grab form lists the SABnzbd categories (get_cats), so a custom
+    # one like tv-kids can be picked instead of only Shows/Movies.
+    client.post("/ui/api/setup", json={"username": "u", "password": "pass1234"})
+    html = client.get("/ui").text
+    assert 'class="g-cat"' in html
+    assert 'sab({ mode: "get_cats" })' in html
+    assert "const cat = catSel.value;" in html
+
+
 def test_ui_search_empty_query(client):
     body = _ui(client, "search", q="", t="search").json()
     assert body["results"] == []
