@@ -466,6 +466,22 @@ def matches_query(query, name: str) -> bool:
     return False
 
 
+# Words after which a bare number is the season, not the episode ("Season 2").
+_SEASON_WORDS = frozenset({"season", "series", "serie", "serii", "seria", "sezona", "rada"})
+# Audio channel layouts: "DTS 5.1" / "AAC 2.0" normalize to two bare digits.
+_CHANNELS = frozenset({("2", "0"), ("5", "1"), ("6", "1"), ("7", "1")})
+
+
+def _is_tech(tk: str) -> bool:
+    """A token that starts the technical tags: digits that are neither a short
+    bare number nor a year — 1080p, x264, DDP5, AAC2, H.264's "264"."""
+    if not any(c.isdigit() for c in tk) or re.match(r"^s\d{1,2}$", tk):
+        return False  # a word, or a season tag "S01"
+    if tk.isdigit() and (len(tk) <= 2 or (len(tk) == 4 and 1900 <= int(tk) <= 2099)):
+        return False
+    return True
+
+
 def file_marker(query, name: str) -> tuple[int | None, int | None]:
     """(season, episode) implied by the file name, read from the first marker
     after the (matched) show title: SxxEyy, 1x05, or a bare "05" (no season).
@@ -475,22 +491,41 @@ def file_marker(query, name: str) -> tuple[int | None, int | None]:
     (matched on the show name alone). The caller must check both numbers: an
     episode-only match let season-2 files impersonate season 1, and the
     release-name rewrite then hid the real season from *arr entirely.
+
+    A bare number only counts before the technical tags (resolution, codecs,
+    audio) and not right after a season word. Scanning the whole name read the
+    "1" of a "DDP5.1" audio tag as episode 1, so a "Blue" alias turned "Blue
+    Planet II One Ocean 1080p ... DDP5.1" into "Bluey S01E01". Words, years and
+    "S01" before the number are fine ("Skvrna CZ 05", "Kaceri pribehy 2017 05"),
+    as is anything before "special 06". SxxEyy/1x05 are unambiguous and count
+    anywhere after the title, whatever words precede them.
     """
     ntoks = normalize_text(name).split()
     for title in _as_titles(query):
         series = _series_tokens(title)
         if series and ntoks[:len(series)] != series:
             continue  # this title isn't the one the file starts with
+        toks = ntoks[len(series):]
         is_special = False
-        for tk in ntoks[len(series):]:
+        tech = False  # past a technical tag: later bare numbers belong to it
+        prev = ""
+        for i, tk in enumerate(toks):
             if tk in ("special", "specials"):
                 is_special = True
+                tech = False  # "... 1080p CZ special 06": the number after it is the special's
+                prev = tk
                 continue
             m = re.match(r"^s(\d{1,2})e(\d{1,3})$", tk) or re.match(r"^(\d{1,2})x(\d{1,3})$", tk)
             if m:
                 return int(m.group(1)), int(m.group(2))
-            if tk.isdigit() and len(tk) <= 2:  # bare episode number (skip years/1080)
-                return (0 if is_special else None), int(tk)
+            if tk.isdigit() and len(tk) <= 2:
+                if i and (tk, toks[i + 1] if i + 1 < len(toks) else "") in _CHANNELS:
+                    tech = True  # "AAC 2.0", "DTS 5.1" (right after the title it's the episode)
+                elif not tech and prev not in _SEASON_WORDS:
+                    return (0 if is_special else None), int(tk)
+            elif _is_tech(tk):
+                tech = True
+            prev = tk
         break
     return None, None
 

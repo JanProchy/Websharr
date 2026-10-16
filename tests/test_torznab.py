@@ -1,5 +1,7 @@
 import xml.etree.ElementTree as ET
 
+import pytest
+
 from app.torznab import (
     alias_titles,
     build_queries,
@@ -301,6 +303,41 @@ def test_file_marker_reads_season():
     assert file_marker("Skvrna", "Skvrna - Bestie 1080p.mkv") == (None, None)
 
 
+def test_file_marker_ignores_numbers_in_tech_tags():
+    from app.torznab import file_marker
+    # A bare number only counts as the episode before the technical tags and not
+    # right after a season word — not the "1" of "DDP5.1", "2.0" of an AAC tag
+    # or the "2" of "Season 2".
+    assert file_marker("Blue", "Blue Planet II One Ocean 1080p AMZN WEB-DL DDP5 1 H 264-NTb.mkv") == (None, None)
+    assert file_marker("Blue", "Blue Planet II One Ocean DTS 5.1.mkv") == (None, None)
+    assert file_marker("Skvrna", "Skvrna - Bestie 1080p AAC 2 0.mkv") == (None, None)
+    assert file_marker("Skvrna", "Skvrna - Bestie AAC 2.0.mkv") == (None, None)
+    assert file_marker("Zaklinac", "Zaklinac Season 2 dabing S02E03.mkv") == (2, 3)
+    # CZ uploads that must keep working (all read the same on the old parser)
+    assert file_marker("Kaceri pribehy", "Kaceri pribehy 2017 05 dabing.avi") == (None, 5)
+    assert file_marker("Krtek", "Krtek dil 3 - Krtek a autíčko.avi") == (None, 3)
+    assert file_marker("Krtek", "Krtek - 07 - Krtek a paraplicko.avi") == (None, 7)
+    assert file_marker("Skvrna", "Skvrna CZ dabing 05.avi") == (None, 5)
+    assert file_marker("Skvrna", "Skvrna - Bestie (05).mkv") == (None, 5)
+    assert file_marker("Skvrna", "Skvrna S01 05.mkv") == (None, 5)
+    assert file_marker("Skvrna", "Skvrna 05 - Bestie 1080p DDP5.1.mkv") == (None, 5)
+    assert file_marker("Skvrna", "Skvrna 2.0 Bestie.mkv") == (None, 2)  # right after the title
+
+
+def test_file_marker_explicit_marker_after_any_words():
+    from app.torznab import file_marker
+    # SxxEyy / 1x05 count wherever they stand after the title: an episode title,
+    # a provider or a language tag in front of them is not evidence of another show.
+    assert file_marker("Skvrna", "Skvrna Bestie S01E05 1080p CZ.mkv") == (1, 5)
+    assert file_marker("Bluey", "Bluey AMZN WEB-DL S01E01 1080p CZ.mkv") == (1, 1)
+    assert file_marker("Bluey", "Bluey GERMAN S01E01 1080p.mkv") == (1, 1)
+    assert file_marker("Skvrna", "Skvrna 1080p WEB-DL DDP5.1 S01E05.mkv") == (1, 5)
+    assert file_marker("Zaklinac", "Zaklinac serie dabing 2x03.mkv") == (2, 3)
+    assert file_marker(["The Sleepers", "Bez vedomi"], "Bez.vedomi.S01E01.2019.CZ.mkv") == (1, 1)
+    assert file_marker(["DuckTales", "Kaceri pribehy"], "Kaceri pribehy 2017 S01E02 CZ.mkv") == (1, 2)
+    assert file_marker("Skvrna", "Skvrna CZ dabing S01E05 1080p.mkv") == (1, 5)
+
+
 def test_search_drops_other_season_with_same_episode(client, fake_webshare, monkeypatch):
     """A "DuckTales S01E02" search must not return "DuckTales.S02E02..." — the
     episode number matches but the season does not (the real-life mis-grab:
@@ -321,6 +358,81 @@ def test_search_drops_other_season_with_same_episode(client, fake_webshare, monk
     root = ET.fromstring(resp.content)
     titles = [it.findtext("title") for it in root.findall("channel/item")]
     assert len(titles) == 1 and "Wronguay" in titles[0]
+
+
+def test_episode_search_ignores_numbers_in_tech_tokens(client, fake_webshare, monkeypatch):
+    """Real-life mis-label: a "Bluey" search also queried the TMDB Czech title
+    "Blue", and "Blue Planet II ... DDP5.1" came back as "Bluey S01E01 - ..." —
+    the "1" of the 5.1 audio tag was read as the episode number."""
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [{"from": "Bluey", "to": "Blue"}])
+    monkeypatch.setattr(settings, "tmdb_token", "")
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("ok", "Bluey S01E01 Magic Xylophone 1080p WEB-DL CZ.mkv", 300_000_000),
+        SearchResult("bp", "Blue Planet II One Ocean 1080p AMZN WEB-DL DDP5 1 H 264-NTb.mkv", 5_300_000_000),
+        SearchResult("dts", "Blue Planet II One Ocean DTS 5.1.mkv", 5_200_000_000),
+        SearchResult("aac", "Blue Planet II One Ocean AAC 2.0.mkv", 5_100_000_000),
+    ]
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "q": "Bluey", "season": "1", "ep": "1"})
+    root = ET.fromstring(resp.content)
+    titles = [i.findtext("title") for i in root.findall("channel/item")]
+    assert len(titles) == 1 and "Magic Xylophone" in titles[0]
+
+
+@pytest.mark.parametrize("q,season,ep,name", [
+    ("Skvrna", "1", "5", "Skvrna Bestie S01E05 1080p CZ.mkv"),
+    ("Bluey", "1", "1", "Bluey AMZN WEB-DL S01E01 1080p CZ.mkv"),
+    ("Bluey", "1", "1", "Bluey GERMAN S01E01 1080p.mkv"),
+])
+def test_episode_search_keeps_explicit_marker_after_words(client, fake_webshare, monkeypatch,
+                                                          q, season, ep, name):
+    """An episode title, provider or language tag between the show title and a
+    real SxxEyy marker must not drop the file (review of PR #3: a word allowlist
+    rejected these, the old parser returned them)."""
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "")
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("want", name, 900_000_000),
+        SearchResult("other", f"{q} S01E09 1080p CZ.mkv", 800_000_000),  # other episode
+    ]
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "q": q, "season": season, "ep": ep})
+    root = ET.fromstring(resp.content)
+    items = root.findall("channel/item")
+    assert [i.findtext("guid") for i in items] == ["websharr-want"]
+    assert items[0].findtext("title").startswith(f"{q} S{int(season):02d}E{int(ep):02d} - ")
+
+
+@pytest.mark.parametrize("name", [
+    "Skvrna 05.mkv",
+    "Skvrna - 05 - Bestie.avi",
+    "Skvrna dil 05.avi",
+    "Skvrna 2019 05.mkv",
+    "Skvrna CZ dabing 05.avi",
+    "Skvrna - Bestie (05).mkv",
+    "Skvrna 05 - Bestie 1080p DDP5.1.mkv",
+])
+def test_episode_search_keeps_bare_episode_numbers(client, fake_webshare, monkeypatch, name):
+    """CZ uploads numbered without SxxEyy stay found: separators, years, episode
+    and language words before the number are fine, tech tags after it too."""
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "")
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("want", name, 900_000_000),
+        SearchResult("other", "Skvrna 01 - Pohreb.mkv", 800_000_000),  # other episode
+    ]
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "q": "Skvrna", "season": "1", "ep": "5"})
+    root = ET.fromstring(resp.content)
+    items = root.findall("channel/item")
+    assert [i.findtext("guid") for i in items] == ["websharr-want"]
+    assert items[0].findtext("title").startswith("Skvrna S01E05 - ")
 
 
 def test_season_search_returns_individual_episodes(client, fake_webshare, monkeypatch):
