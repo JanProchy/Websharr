@@ -116,6 +116,7 @@ class WebshareClient:
         self._password_digest = password_digest
         self._token: str | None = None
         self._token_ts: float = 0.0
+        self._credentials_gen = 0  # bumped by set_credentials
         self._login_lock = asyncio.Lock()
         self._http = httpx.AsyncClient(
             base_url=API_BASE,
@@ -134,6 +135,7 @@ class WebshareClient:
         self._password_digest = password_digest
         self._token = None
         self._token_ts = 0.0
+        self._credentials_gen += 1
 
     async def check_login(self) -> str:
         """Force a fresh login; returns the username on success."""
@@ -181,9 +183,16 @@ class WebshareClient:
 
     async def _get_token(self, force: bool = False) -> str:
         async with self._login_lock:
-            if force or not self._token or time.monotonic() - self._token_ts > TOKEN_TTL:
-                self._token = await self._login()
-                self._token_ts = time.monotonic()
+            while force or not self._token or time.monotonic() - self._token_ts > TOKEN_TTL:
+                gen = self._credentials_gen
+                token = await self._login()
+                if gen == self._credentials_gen:
+                    self._token = token
+                    self._token_ts = time.monotonic()
+                    break
+                # set_credentials ran during the login: that token is the old
+                # account's, so don't cache it — log in again as the new one.
+                force = False
             return self._token
 
     async def _authed_post(self, path: str, data: dict) -> ET.Element:

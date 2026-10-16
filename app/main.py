@@ -7,6 +7,7 @@ search and download from a Webshare.cz premium account.
 
 import asyncio
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 
@@ -73,6 +74,13 @@ async def lifespan(app: FastAPI):
     app.state.downloads = manager
     app.state.account = None
     app.state.account_ts = 0.0
+    app.state.account_refresh_ok = None  # None until the first refresh attempt ends
+    # Bumped by the UI when the Webshare credentials change (ui._account_changed),
+    # so a refresh still running for the old account can't land on the new one.
+    app.state.account_gen = 0
+    # Set by the UI when Webshare credentials change: refresh now instead of
+    # leaving /ready "pending" (or failed) until the next hourly round.
+    app.state.account_refresh = asyncio.Event()
     monitor_task = asyncio.create_task(_account_monitor(app))
     logger.info("Websharr %s started (user=%s)", __version__,
                 config.webshare_username or "<not configured>")
@@ -94,28 +102,41 @@ async def _account_monitor(app: FastAPI) -> None:
     client: WebshareClient = app.state.webshare
     while True:
         if config.webshare_username:
+            # If the credentials change while this refresh runs, its answer (or
+            # failure) belongs to the old account: drop it. The UI has reset the
+            # state and set account_refresh, so the next round starts right away.
+            gen = app.state.account_gen
             try:
                 status = await client.account_status()
-                app.state.account = status
-                app.state.account_ts = time.time()
-                notify.reset_throttle("webshare_down")
-                urls = settings.notify_urls
-                if not status["vip"]:
-                    await notify.send_throttled(
-                        urls, "vip", "Websharr: Webshare VIP expired",
-                        "Webshare VIP has expired — downloads will fail until it is renewed.", DAY)
-                elif status["vip_days"] <= settings.notify_vip_days:
-                    await notify.send_throttled(
-                        urls, "vip", "Websharr: Webshare VIP expiring soon",
-                        f"Webshare VIP expires in {status['vip_days']} day(s) — {status['vip_until']}.", DAY)
-                else:
-                    notify.reset_throttle("vip")  # healthy again → warn afresh next time
+                if app.state.account_gen == gen:
+                    app.state.account = status
+                    app.state.account_ts = time.time()
+                    app.state.account_refresh_ok = True
+                    notify.reset_throttle("webshare_down")
+                    urls = settings.notify_urls
+                    if not status["vip"]:
+                        await notify.send_throttled(
+                            urls, "vip", "Websharr: Webshare VIP expired",
+                            "Webshare VIP has expired — downloads will fail until it is renewed.", DAY)
+                    elif status["vip_days"] <= settings.notify_vip_days:
+                        await notify.send_throttled(
+                            urls, "vip", "Websharr: Webshare VIP expiring soon",
+                            f"Webshare VIP expires in {status['vip_days']} day(s) — {status['vip_until']}.",
+                            DAY)
+                    else:
+                        notify.reset_throttle("vip")  # healthy again → warn afresh next time
             except Exception as exc:  # background loop must survive anything
-                logger.warning("Webshare account status refresh failed: %s", exc)
-                await notify.send_throttled(
-                    settings.notify_urls, "webshare_down", "Websharr: Webshare unreachable",
-                    f"Could not reach Webshare: {exc}", 6 * 3600)
-        await asyncio.sleep(ACCOUNT_REFRESH)
+                if app.state.account_gen == gen:
+                    app.state.account_refresh_ok = False
+                    logger.warning("Webshare account status refresh failed: %s", exc)
+                    await notify.send_throttled(
+                        settings.notify_urls, "webshare_down", "Websharr: Webshare unreachable",
+                        f"Could not reach Webshare: {exc}", 6 * 3600)
+        try:
+            await asyncio.wait_for(app.state.account_refresh.wait(), ACCOUNT_REFRESH)
+        except asyncio.TimeoutError:
+            pass
+        app.state.account_refresh.clear()
 
 
 app = FastAPI(title="Websharr", version=__version__, lifespan=lifespan)
@@ -136,9 +157,52 @@ async def status():
     }
 
 
+def _storage_check() -> dict:
+    for label, path in (("complete", config.complete_dir), ("incomplete", config.incomplete_dir)):
+        if not path.is_dir():
+            return {"status": "error", "reason": f"{label} dir missing"}
+        # Creating files needs search (x) permission on the dir as well as w:
+        # a 0666 dir passes W_OK alone but every open() inside it fails.
+        if not os.access(path, os.W_OK | os.X_OK):
+            return {"status": "error", "reason": f"{label} dir not writable"}
+    return {"status": "ok"}
+
+
+def _webshare_check() -> dict:
+    """Judge the account from what _account_monitor cached — a readiness probe
+    must never hit Webshare itself (monitors poll it every minute)."""
+    if not config.webshare_username:
+        return {"status": "error", "reason": "Webshare account not configured"}
+    ts = app.state.account_ts
+    if not ts:
+        if app.state.account_refresh_ok is False:
+            return {"status": "error", "reason": "Webshare account refresh failed"}
+        return {"status": "pending"}  # startup: first refresh still running
+    if time.time() - ts > 3 * ACCOUNT_REFRESH:
+        return {"status": "error", "reason": "Webshare account not refreshed for "
+                f"{int((time.time() - ts) // 3600)} h"}
+    if not (app.state.account or {}).get("vip"):
+        return {"status": "error", "reason": "Webshare VIP expired"}
+    return {"status": "ok"}
+
+
 @app.get("/health")
 async def health():
+    """Liveness for the Docker HEALTHCHECK: the process answers. Account and
+    storage trouble is reported by /ready, not here."""
     return {"status": "ok"}
+
+
+@app.get("/ready")
+async def ready():
+    """Unauthenticated readiness for Uptime Kuma and the like: 200 only when
+    downloads can work, 503 with a short reason per check otherwise (also while
+    the account isn't verified yet). Exposes no paths or account details."""
+    checks = {"storage": _storage_check(), "webshare": _webshare_check()}
+    states = {c["status"] for c in checks.values()}
+    overall = "ok" if states == {"ok"} else ("error" if "error" in states else "pending")
+    return JSONResponse({"status": overall, "checks": checks},
+                        status_code=200 if overall == "ok" else 503)
 
 
 def _fmt_speed(bps: float) -> str:
