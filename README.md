@@ -156,6 +156,7 @@ as normal; you just lose the automatic Czech-title resolution.
 | `STATE_FILE` | `/config/state.json` | queue/history persistence |
 | `MAX_CONCURRENT_DOWNLOADS` | `2` | concurrent downloads |
 | `SEARCH_LIMIT` | `60` | max results from Webshare per query |
+| `JUNK_FILTER` | off | drop cinema recordings, trailers, 3D and episodes in movie searches ([details](#junk-filter-optional)); also in Settings |
 
 ## How search results are cleaned up
 
@@ -171,6 +172,24 @@ are noisy. For a TV query Websharr:
 
 Even so, because matching is filename-based, the occasional odd result slips
 through — use Interactive Search / the UI when it does.
+
+### Junk filter (optional)
+
+With **Settings → Junk filter** (or `JUNK_FILTER=1`) the indexer feed also
+leaves out files that are rarely the wanted title:
+
+- cinema recordings and work prints: `CAM`/`HDCAM`/`CAMRip`, `TS`/`telesync`,
+  `TC`/`telecine`, screeners (`SCR`, `DVDSCR`…), `R5`, `kinorip`, `WORKPRINT`;
+- trailers, teasers and samples (`ukazka`, `upoutavka`);
+- 3D frame-packed versions (`3D`, `SBS`, `H-SBS`, `MVC`, `Half OU`);
+- in a movie search, files with an episode marker (`S01E03`, `1x05`) — a
+  one-word title like *Avatar* otherwise pulls in a whole series.
+
+Only the tags after the title are read, and a word of the searched title (or
+of its aliases) never counts: *Cam* (2018) and *Trailer Park Boys* are kept, and
+a `.ts` container is not `TS`. It is off by default because these are quality
+and format choices that your Sonarr/Radarr profiles otherwise make; it applies
+to automatic and interactive *arr searches alike (not to the Search tab here).
 
 ## Limitations
 

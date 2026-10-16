@@ -66,6 +66,8 @@ class Settings:
         self.notify_urls: list[str] = list(config.notify_urls)
         self.notify_vip_days: int = config.notify_vip_days
         self.theme: str = DEFAULT_THEME
+        # Opt-in junk filter for the indexer feed (see README).
+        self.junk_filter: bool = config.junk_filter
 
     @property
     def configured(self) -> bool:
@@ -105,6 +107,8 @@ class Settings:
             self.notify_vip_days = config.notify_vip_days
         theme = data.get("theme", DEFAULT_THEME)
         self.theme = theme if theme in THEMES else DEFAULT_THEME
+        junk = data.get("junk_filter")
+        self.junk_filter = junk if isinstance(junk, bool) else config.junk_filter
 
     def save(self) -> None:
         path = config.settings_file
@@ -124,6 +128,7 @@ class Settings:
             "notify_urls": self.notify_urls,
             "notify_vip_days": self.notify_vip_days,
             "theme": self.theme,
+            "junk_filter": self.junk_filter,
         }
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         path.chmod(0o600)

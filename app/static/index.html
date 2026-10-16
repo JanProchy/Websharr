@@ -462,6 +462,8 @@
   .primary { background: var(--accent); border: none; color: var(--primary-text); border-radius: 8px;
     padding: 8px 18px; font-weight: 800; cursor: pointer; }
   .primary:hover { background: var(--accent-hover); }
+  .sform label.scheck { display: flex; align-items: center; gap: 8px; }
+  .sform .scheck input { width: 18px; height: 18px; margin: 0; flex-shrink: 0; }
   .sresult { display: block; font-size: 13px; font-weight: 700; margin-top: 10px; min-height: 16px; }
   .theme-picker { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
   .theme-choice { position: relative; display: block; margin: 0; cursor: pointer; }
@@ -861,6 +863,25 @@
 
     <div class="scard">
       <div class="sinfo">
+        <h3>Junk filter</h3>
+        <p class="shint">Leave out of the indexer feed what is rarely the wanted file:
+          cinema recordings (CAM, TS, TC, screeners, kinorip, work prints), trailers
+          and samples, 3D versions (3D, SBS, MVC) and, in a movie search, TV episodes.
+          Off by default, so your Sonarr/Radarr profiles decide. Words of the searched
+          title never count (<i>Cam</i>, <i>Trailer Park Boys</i>).</p>
+      </div>
+      <div class="sform">
+        <label class="scheck"><input id="set-junk" type="checkbox"> Drop cinema recordings, trailers and 3D</label>
+        <div class="srow">
+          <div class="spacer"></div>
+          <button class="primary" id="set-junk-save">Save</button>
+        </div>
+        <span class="sresult" id="set-junk-result"></span>
+      </div>
+    </div>
+
+    <div class="scard">
+      <div class="sinfo">
         <h3>Czech titles (TMDB)</h3>
         <p class="shint">Sonarr/Radarr search by the title they know (usually English),
           but many Webshare files use the Czech name. With a <b>TMDB API Read Access
@@ -1142,6 +1163,7 @@ const App = {
       $("set-maxdl").value = s.max_concurrent || 2;
       $("set-notify-urls").value = (s.notify_urls || []).join("\n");
       $("set-vip-days").value = s.notify_vip_days ?? 7;
+      $("set-junk").checked = !!s.junk_filter;
       this.renderVip(s.account);
       $("set-tmdb-token").value = "";
       $("set-tmdb-token").placeholder = s.tmdb_token_set
@@ -1799,6 +1821,12 @@ $("set-notify-save").onclick = async () => {
     });
     sresult("set-notify-result", true, "✓ Saved");
   } catch (e) { sresult("set-notify-result", false, e.message); }
+};
+$("set-junk-save").onclick = async () => {
+  try {
+    await uiPost("settings", { junk_filter: $("set-junk").checked });
+    sresult("set-junk-result", true, "✓ Saved");
+  } catch (e) { sresult("set-junk-result", false, e.message); }
 };
 $("set-notify-test").onclick = async () => {
   sresult("set-notify-result", true, "Sending…");

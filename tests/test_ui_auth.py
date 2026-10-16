@@ -124,6 +124,24 @@ def test_theme_setting_defaults_validates_persists_and_renders(client):
     assert client.get("/ui/api/settings").json()["theme"] == "space-grey"
 
 
+def test_junk_filter_setting_defaults_validates_and_persists(client):
+    import json
+
+    from app.config import config
+    from app.settings import settings
+
+    _setup(client)
+    assert client.get("/ui/api/settings").json()["junk_filter"] is False
+    assert client.post("/ui/api/settings", json={"junk_filter": True}).status_code == 200
+    assert client.get("/ui/api/settings").json()["junk_filter"] is True
+    assert json.loads(config.settings_file.read_text())["junk_filter"] is True
+    settings.load()  # a fresh process reads it back
+    assert settings.junk_filter is True
+    assert client.post("/ui/api/settings", json={"junk_filter": "yes"}).status_code == 400
+    assert client.post("/ui/api/settings", json={"junk_filter": False}).status_code == 200
+    assert settings.junk_filter is False
+
+
 def test_webshare_password_never_stored_in_plaintext(client):
     from app.config import config
     import json

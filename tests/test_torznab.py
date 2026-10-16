@@ -1,5 +1,7 @@
 import xml.etree.ElementTree as ET
 
+import pytest
+
 from app.torznab import (
     alias_titles,
     build_queries,
@@ -289,6 +291,97 @@ def test_year_conflict():
     assert not year_conflict("DuckTales.S01E02.1080p.mkv", 1987)         # 1080 != year
     assert not year_conflict("Film.2018.1080p.mkv", 2019)                # ±1 tolerated
     assert not year_conflict("Kaceri pribehy 2017 04.mkv", 0)            # unknown year
+
+
+def test_junk_reason():
+    from app.torznab import junk_reason
+    assert junk_reason("Superman", "Superman.2025.1080p.kinorip.x264.encz-dab.tit.mkv")
+    assert junk_reason("Toy Story", "Toy Story - Pribeh hracek 5 (CAMRip) (PL dabing z kina).mkv")
+    assert junk_reason("Film", "Film 2024 HDTS CZ.avi")
+    assert junk_reason("Film", "Film 2024 1080p HQ Clean Audio.mkv")
+    assert junk_reason("Duna", "Duna 2 - upoutavka CZ.mp4")
+    assert junk_reason("Black Panther", "Black Panther 2017 3D Half SBS CZ dab HD 1080p.mkv")
+    assert junk_reason("Avatar", "Avatar S01E03 CZ.mkv", movie=True)
+    assert junk_reason("Avatar", "Avatar S01 E03 CZ.mkv", movie=True)
+    # an unfinished work print, not the film (Radarr took one as WEBDL-1080p)
+    assert junk_reason("The Amazing Digital Circus The Last Act",
+                       "The.Amazing.Digital.Circus.The.Last.Act.2026.1080p.WORKPRiNT.WEB-DL.x264-DKS.mkv")
+    # a ".ts" container, words merely containing a token, and normal names pass
+    assert not junk_reason("Hleda se Nemo", "Hleda se Nemo 2003 CZ.ts")
+    assert not junk_reason("Scooby-Doo", "Scooby-Doo a pratele (2004) CZ.mkv")
+    assert not junk_reason("Avatar", "Avatar 2009 1080p CZ dabing.mkv", movie=True)
+    assert not junk_reason("Avatar", "Avatar S01E03 CZ.mkv", movie=False)
+
+
+def test_junk_reason_ignores_the_requested_title():
+    from app.torznab import junk_reason
+    # Words of the title (or of any alias title) are the title, not tags.
+    assert not junk_reason("Cam", "Cam.2018.1080p.WEB-DL.mkv", movie=True)
+    assert not junk_reason("Trailer Park Boys", "Trailer.Park.Boys.S01E01.1080p.WEB-DL.mkv")
+    assert not junk_reason(["Piranha 3DD", "Piranha 3D"], "Piranha 3D 2010 1080p.mkv", movie=True)
+    assert not junk_reason(["Sample", "Vzorek"], "Vzorek 2020 Sample CZ.mkv", movie=True)
+    # ...even when repeated later; other tags after it still count
+    assert not junk_reason("Trailer Park Boys", "Trailer Park Boys S01E01 Trailer Park Supermarket.mkv")
+    assert junk_reason("Cam", "Cam.2018.HDCAM.mkv", movie=True) == "hdcam"
+    assert junk_reason("Trailer Park Boys", "Trailer Park Boys S01E01 sample.mkv") == "sample"
+    # an episode marker that is part of the title is not an episode
+    assert not junk_reason("S01E01", "S01E01 2019 1080p.mkv", movie=True)
+
+
+def _feed(client, **params):
+    resp = client.get("/torznab/api", params={"apikey": "testkey", **params})
+    assert resp.status_code == 200
+    root = ET.fromstring(resp.content)
+    return [i.findtext("title") for i in root.findall("channel/item")]
+
+
+_JUNK_PROBES = [
+    SearchResult("avatar", "Avatar.2009.1080p.BluRay.mkv", 9_000_000_000),
+    SearchResult("avatar3d", "Avatar.2009.3D.Half.SBS.1080p.mkv", 8_000_000_000),
+    SearchResult("avatarep", "Avatar S01E03 CZ.mkv", 1_000_000_000),
+    SearchResult("film", "Film.2024.1080p.WEB-DL.mkv", 7_000_000_000),
+    SearchResult("filmcam", "Film.2024.HDCAM.mkv", 6_000_000_000),
+    SearchResult("filmts", "Film 2024 1080p CZ.ts", 5_000_000_000),
+    SearchResult("cam", "Cam.2018.1080p.WEB-DL.mkv", 4_000_000_000),
+    SearchResult("tpb", "Trailer.Park.Boys.S01E01.1080p.WEB-DL.mkv", 3_000_000_000),
+]
+
+
+@pytest.fixture
+def junk_search(client, fake_webshare, monkeypatch):
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "")
+    fake_webshare.fuzzy = True
+    fake_webshare.results = list(_JUNK_PROBES)
+    return settings
+
+
+def test_junk_filter_off_by_default_keeps_baseline(client, junk_search):
+    """Off (the default) the feed is unchanged: 3D, HDCAM and an episode in a
+    movie search are left to the *arr profiles."""
+    assert junk_search.junk_filter is False
+    assert _feed(client, t="movie", q="Avatar") == [
+        "Avatar.2009.1080p.BluRay", "Avatar.2009.3D.Half.SBS.1080p", "Avatar S01E03 CZ 1080p"]
+    assert _feed(client, t="movie", q="Film") == [
+        "Film.2024.1080p.WEB-DL", "Film.2024.HDCAM 1080p", "Film 2024 1080p CZ"]
+    assert _feed(client, t="movie", q="Cam") == ["Cam.2018.1080p.WEB-DL"]
+    assert _feed(client, t="tvsearch", q="Trailer Park Boys", season="1", ep="1") == [
+        "Trailer Park Boys S01E01 - Trailer.Park.Boys.1080p.WEB-DL"]
+
+
+def test_junk_filter_on_drops_junk_but_not_titles(client, junk_search, monkeypatch):
+    monkeypatch.setattr(junk_search, "junk_filter", True)
+    # 3D and the episode go, the film stays
+    assert _feed(client, t="movie", q="Avatar") == ["Avatar.2009.1080p.BluRay"]
+    # HDCAM goes; a ".ts" container is not a telesync
+    assert _feed(client, t="movie", q="Film") == ["Film.2024.1080p.WEB-DL", "Film 2024 1080p CZ"]
+    # title words are not tags
+    assert _feed(client, t="movie", q="Cam") == ["Cam.2018.1080p.WEB-DL"]
+    assert _feed(client, t="tvsearch", q="Trailer Park Boys", season="1", ep="1") == [
+        "Trailer Park Boys S01E01 - Trailer.Park.Boys.1080p.WEB-DL"]
+    assert _feed(client, t="search", q="Trailer Park Boys") == [
+        "Trailer.Park.Boys.S01E01.1080p.WEB-DL"]
 
 
 def test_file_marker_reads_season():

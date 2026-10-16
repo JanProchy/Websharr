@@ -185,6 +185,7 @@ async def ui_settings_get(request: Request):
         "notify_urls": settings.notify_urls,
         "notify_vip_days": settings.notify_vip_days,
         "theme": settings.theme,
+        "junk_filter": settings.junk_filter,
         "account": getattr(request.app.state, "account", None),
     }
 
@@ -268,6 +269,10 @@ async def ui_settings_post(request: Request):
             settings.notify_vip_days = max(0, int(body.get("notify_vip_days")))
         except (TypeError, ValueError):
             return JSONResponse({"error": "notify_vip_days must be a number"}, status_code=400)
+    if "junk_filter" in body:
+        if not isinstance(body.get("junk_filter"), bool):
+            return JSONResponse({"error": "junk_filter must be true or false"}, status_code=400)
+        settings.junk_filter = body.get("junk_filter")
     if "theme" in body:
         theme = body.get("theme")
         if theme not in THEMES:

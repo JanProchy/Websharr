@@ -430,6 +430,58 @@ async def expand_titles(t: str, q: str, cat: str | None, *, tvdbid: str | None =
     return titles, display, language, czech_titles, year
 
 
+# Releases that are never the title itself: cinema recordings and work prints,
+# trailers and samples, 3D frame-packed versions. Opt-in (Settings → Junk
+# filter): these are quality/format choices, which otherwise stay with the
+# *arr profiles. Matched on whole normalized tokens of the release tags only —
+# what follows the matched title, minus any word of a requested title — so
+# "Cam (2018)" or "Trailer Park Boys" are not mistaken for tags. The extension
+# is stripped first so a ".ts" container isn't "TS".
+_JUNK_TOKENS = frozenset("""
+cam camrip hdcam ts telesync hdts tc telecine hdtc scr screener dvdscr bdscr webscr
+kinorip pdvd predvd predvdrip r5 workprint
+trailer trailers teaser sample ukazka upoutavka upoutavky
+3d sbs hsbs mvc
+""".split())
+_JUNK_PHRASES = (("kino", "rip"), ("hq", "clean", "audio"), ("half", "ou"))
+_MOVIE_EP_RE = re.compile(r"\bs\d{1,2} ?e\d{1,3}(?!\d)|\b\d{1,2}x\d{2}\b")
+
+
+def _release_tags(query, name: str) -> tuple[list[str], set[str]]:
+    """(tokens after the longest matched title, words of every title)."""
+    stem = name.rsplit(".", 1)[0] if _is_video(name) else name
+    ntoks = normalize_text(stem).split()
+    start = 0
+    title_words: set[str] = set()
+    for title in _as_titles(query):
+        title_words.update(normalize_text(title).split())
+        series = _series_tokens(title)
+        if series and ntoks[:len(series)] == series:
+            start = max(start, len(series))
+    return ntoks[start:], title_words
+
+
+def junk_reason(query, name: str, movie: bool = False) -> str:
+    """Why a file is never the wanted title ("" when it may be): a cinema
+    recording (CAM/TS/TC/screener/kinorip), a trailer or sample, a 3D
+    frame-packed version, or — in a movie search — an episode (a one-word title
+    like "Avatar" otherwise pulls in a whole series). Only the release tags
+    after the requested title (or any of its alias titles) are read."""
+    toks, title_words = _release_tags(query, name)
+    hit = next((t for t in toks if t in _JUNK_TOKENS and t not in title_words), "")
+    if hit:
+        return hit
+    for phrase in _JUNK_PHRASES:
+        if title_words.intersection(phrase):
+            continue
+        n = len(phrase)
+        if any(tuple(toks[i:i + n]) == phrase for i in range(len(toks) - n + 1)):
+            return " ".join(phrase)
+    if movie and _MOVIE_EP_RE.search(" ".join(t for t in toks if t not in title_words)):
+        return "episode in a movie search"
+    return ""
+
+
 def year_conflict(name: str, year: int) -> bool:
     """True when every year token in the file name contradicts the title's year.
 
@@ -670,6 +722,8 @@ async def torznab_api(request: Request):
                 continue
             if not matches_query(titles, r.name):
                 continue  # drop Webshare's loose non-matching fulltext hits
+            if settings.junk_filter and junk_reason(titles, r.name, movie=(t == "movie")):
+                continue  # opt-in: CAM/trailer/3D, or an episode in a movie search
             if year_conflict(r.name, year):
                 continue  # same-named other title (DuckTales 1987 vs 2017)
             if want_ep is not None or want_season is not None:
